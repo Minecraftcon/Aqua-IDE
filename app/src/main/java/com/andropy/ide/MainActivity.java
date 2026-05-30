@@ -2242,10 +2242,14 @@ public class MainActivity extends Activity {
                         + "Dir::Etc \"etc/apt\";\n"
                         + "Dir::State \"var/lib/apt\";\n"
                         + "Dir::Cache \"var/cache/apt\";\n"
+                        + "Dir::Log \"var/log/apt\";\n"
                         + "Dir::Temp \"/data/data/" + getPackageName() + "/files/usr/tmp\";\n"
                         + "Dir::Etc::parts \"apt.conf.d\";\n"
                         + "Dir::State::status \"/data/data/" + getPackageName() + "/files/usr/var/lib/dpkg/status\";\n"
                         + "Dir::Bin::methods \"/data/data/" + getPackageName() + "/files/usr/lib/apt/methods\";\n"
+                        + "Dir::Bin::dpkg \"/data/data/" + getPackageName() + "/files/usr/bin/dpkg\";\n"
+                        + "DPkg::Path \"/data/data/" + getPackageName() + "/files/usr/bin\";\n"
+                        + "DPkg::Tools::Options::/data/data/" + getPackageName() + "/files/usr/bin/dpkg::InfoFD \"20\";\n"
                         + "APT::Sandbox::User \"root\";\n");
         writeText(new File(etcRoot, "apt/apt.conf.d/00-aqua-https"),
                 "Acquire::https::CaInfo \"/data/data/" + getPackageName() + "/files/usr/etc/tls/cert.pem\";\n");
