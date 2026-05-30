@@ -2,21 +2,21 @@ Origin: Aqua IDE
 Label: Aqua IDE
 Suite: stable
 Codename: stable
-Date: Sat, 30 May 2026 16:34:46 +0000
+Date: Sat, 30 May 2026 17:30:25 +0000
 Architectures: all aarch64 x86_64
 Components: main
 Description: Aqua IDE Android package repository
 MD5Sum:
- d41d8cd98f00b204e9800998ecf8427e                0 main/binary-aarch64/Packages
- c069b996222ad37a032799fbb6c35c6b               29 main/binary-aarch64/Packages.gz
- d41d8cd98f00b204e9800998ecf8427e                0 main/binary-all/Packages
- c069b996222ad37a032799fbb6c35c6b               29 main/binary-all/Packages.gz
+ 2a4d5de56d73070e6aaea310737d6ad4              766 main/binary-aarch64/Packages
+ dc0cd41e3fa11592d52b693b63313c4a              436 main/binary-aarch64/Packages.gz
+ 2a4d5de56d73070e6aaea310737d6ad4              766 main/binary-all/Packages
+ fa7401b8ec4030fdc3452f6ec50fd1cb              436 main/binary-all/Packages.gz
  d41d8cd98f00b204e9800998ecf8427e                0 main/binary-x86_64/Packages
- 744e14e3487bd77f2e98ca23620383ec               29 main/binary-x86_64/Packages.gz
+ 3707c618f2696048f8ae8d742aeba287               29 main/binary-x86_64/Packages.gz
 SHA256:
- e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855                0 main/binary-aarch64/Packages
- 78649f0270429c0669e6d1444b47c2d9e1659c4b452be383fc754a1eb1ef442f               29 main/binary-aarch64/Packages.gz
- e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855                0 main/binary-all/Packages
- 78649f0270429c0669e6d1444b47c2d9e1659c4b452be383fc754a1eb1ef442f               29 main/binary-all/Packages.gz
+ 4343cb5dfd7d9b86dc4c8dd2e4e270127902fd8cc0189d530f3a33635dfc21ea              766 main/binary-aarch64/Packages
+ 16b03d80178ebaca7bfe3de23471970278d06f725173672aa98be32513962487              436 main/binary-aarch64/Packages.gz
+ 4343cb5dfd7d9b86dc4c8dd2e4e270127902fd8cc0189d530f3a33635dfc21ea              766 main/binary-all/Packages
+ 67d38c13c93706600f7f367face5b4bcce9f0ca412260b3a406f3b6fca799ef3              436 main/binary-all/Packages.gz
  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855                0 main/binary-x86_64/Packages
- d109fc8bcc53b7f4b89aab358776d4d2833df19633a72f9bdfc1c804a74ebf83               29 main/binary-x86_64/Packages.gz
+ dd5a5b21d0f493e03ae1d77cf0600155b9ff14588ac306e1c942df5f252d5054               29 main/binary-x86_64/Packages.gz
