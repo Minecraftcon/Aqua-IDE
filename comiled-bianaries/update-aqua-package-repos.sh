@@ -51,7 +51,11 @@ for arch in all aarch64 x86_64; do
   : > "$packages"
   find "$APT/pool/main" -maxdepth 1 -type f -name '*.deb' | sort | while read -r deb; do
     deb_arch="$(dpkg-deb -f "$deb" Architecture 2>/dev/null || true)"
-    [[ "$deb_arch" == "$arch" || "$deb_arch" == "all" || "$arch" == "all" ]] || continue
+    if [[ "$arch" == "all" ]]; then
+      [[ "$deb_arch" == "all" ]] || continue
+    else
+      [[ "$deb_arch" == "$arch" || "$deb_arch" == "all" ]] || continue
+    fi
     rel="${deb#$APT/}"
     {
       dpkg-deb -f "$deb"
