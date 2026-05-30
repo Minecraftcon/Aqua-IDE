@@ -44,6 +44,7 @@ import com.termux.terminal.TerminalEmulator;
 import com.termux.terminal.TerminalSession;
 import com.termux.terminal.TerminalSessionClient;
 import com.termux.view.TerminalViewClient;
+import io.airlift.compress.zstd.ZstdInputStream;
 
 import java.io.BufferedWriter;
 import java.io.BufferedReader;
@@ -76,13 +77,13 @@ public class MainActivity extends Activity {
     private static final String DEFAULT_FILE = "new.py";
     private static final String PREFIX_DIR = "usr";
     private static final String RUNTIME_BASIC_VERSION = "andropy-basic-runtime-8";
-    private static final String RUNTIME_EXTENDED_VERSION = "andropy-extended-runtime-7";
+    private static final String RUNTIME_EXTENDED_VERSION = "andropy-extended-runtime-9";
     private static final String RUNTIME_BASIC_RELEASE_BASE = "https://github.com/Minecraftcon/Aqua-IDE/releases/download/runtime-v8/";
-    private static final String RUNTIME_EXTENDED_RELEASE_BASE = "https://github.com/Minecraftcon/Aqua-IDE/releases/download/runtime-v7/";
+    private static final String RUNTIME_EXTENDED_RELEASE_BASE = "https://github.com/Minecraftcon/Aqua-IDE/releases/download/runtime-v9/";
     private static final String RUNTIME_BASIC_X86_64_ZIP = "aqua-runtime-x86_64-v8.zip";
     private static final String RUNTIME_BASIC_ARM64_ZIP = "aqua-runtime-arm64-v8a-v8.zip";
-    private static final String RUNTIME_EXTENDED_X86_64_ZIP = "aqua-runtime-x86_64-v7.zip";
-    private static final String RUNTIME_EXTENDED_ARM64_ZIP = "aqua-runtime-arm64-v8a-v7.zip";
+    private static final String RUNTIME_EXTENDED_X86_64_ZIP = "aqua-runtime-x86_64-v9.tar.zst";
+    private static final String RUNTIME_EXTENDED_ARM64_ZIP = "aqua-runtime-arm64-v8a-v9.tar.zst";
     private static final int RUNTIME_BASIC = 0;
     private static final int RUNTIME_EXTENDED = 1;
     private static final int RUNTIME_MAX = 2;
@@ -1714,7 +1715,11 @@ public class MainActivity extends Activity {
             }
             setBootstrapProgress(0.62f, "Extracting " + runtimeAbiName() + " runtime");
             appendBootstrapOutput("$ extract-runtime " + payload.getName());
-            extractZipFile(payload, prefixRoot);
+            if (payload.getName().endsWith(".tar.zst")) {
+                extractTarZstFile(payload, prefixRoot);
+            } else {
+                extractZipFile(payload, prefixRoot);
+            }
             chmodRuntimeTree(prefixRoot);
             try (FileOutputStream output = new FileOutputStream(marker)) {
                 output.write(runtimeAssetVersion().getBytes(StandardCharsets.UTF_8));
@@ -1814,6 +1819,143 @@ public class MainActivity extends Activity {
                     outputFile.setReadable(true, false);
                 }
                 zip.closeEntry();
+            }
+        }
+    }
+
+    private void extractTarZstFile(File archiveFile, File targetDir) throws IOException {
+        targetDir.mkdirs();
+        String targetRoot = targetDir.getCanonicalPath() + File.separator;
+        try (InputStream fileInput = new FileInputStream(archiveFile);
+             InputStream zstd = new ZstdInputStream(fileInput)) {
+            byte[] header = new byte[512];
+            while (readFullyOrEof(zstd, header)) {
+                if (isZeroBlock(header)) break;
+                String name = tarString(header, 0, 100);
+                String prefix = tarString(header, 345, 155);
+                if (!prefix.isEmpty()) name = prefix + "/" + name;
+                long size = tarOctal(header, 124, 12);
+                char type = (char) header[156];
+                String linkName = tarString(header, 157, 100);
+                File outputFile = new File(targetDir, name);
+                String outputPath = outputFile.getCanonicalPath();
+                if (!outputPath.startsWith(targetRoot)) {
+                    skipTarEntry(zstd, size);
+                    continue;
+                }
+
+                if (type == '5') {
+                    outputFile.mkdirs();
+                } else if (type == '2') {
+                    File parent = outputFile.getParentFile();
+                    if (parent != null) parent.mkdirs();
+                    outputFile.delete();
+                    try {
+                        Os.symlink(linkName, outputFile.getAbsolutePath());
+                    } catch (ErrnoException ignored) {
+                    }
+                } else if (type == '1') {
+                    File parent = outputFile.getParentFile();
+                    if (parent != null) parent.mkdirs();
+                    File linkTarget = new File(targetDir, linkName);
+                    outputFile.delete();
+                    try {
+                        Os.link(linkTarget.getAbsolutePath(), outputFile.getAbsolutePath());
+                    } catch (ErrnoException ignored) {
+                        copyFile(linkTarget, outputFile);
+                    }
+                } else {
+                    File parent = outputFile.getParentFile();
+                    if (parent != null) parent.mkdirs();
+                    try (OutputStream output = new FileOutputStream(outputFile)) {
+                        copyExact(zstd, output, size);
+                    }
+                    outputFile.setReadable(true, false);
+                }
+                skipTarPadding(zstd, size);
+            }
+        }
+    }
+
+    private boolean readFullyOrEof(InputStream input, byte[] buffer) throws IOException {
+        int offset = 0;
+        while (offset < buffer.length) {
+            int read = input.read(buffer, offset, buffer.length - offset);
+            if (read == -1) return offset != 0 && false;
+            offset += read;
+        }
+        return true;
+    }
+
+    private boolean isZeroBlock(byte[] block) {
+        for (byte b : block) {
+            if (b != 0) return false;
+        }
+        return true;
+    }
+
+    private String tarString(byte[] header, int offset, int length) {
+        int end = offset;
+        int limit = offset + length;
+        while (end < limit && header[end] != 0) end++;
+        return new String(header, offset, end - offset, StandardCharsets.UTF_8).trim();
+    }
+
+    private long tarOctal(byte[] header, int offset, int length) {
+        long value = 0;
+        int end = offset + length;
+        for (int i = offset; i < end; i++) {
+            byte b = header[i];
+            if (b == 0 || b == ' ') continue;
+            if (b < '0' || b > '7') break;
+            value = (value << 3) + (b - '0');
+        }
+        return value;
+    }
+
+    private void copyExact(InputStream input, OutputStream output, long bytes) throws IOException {
+        byte[] buffer = new byte[65536];
+        long remaining = bytes;
+        while (remaining > 0) {
+            int read = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+            if (read == -1) throw new IOException("unexpected end of tar entry");
+            output.write(buffer, 0, read);
+            remaining -= read;
+        }
+    }
+
+    private void skipTarEntry(InputStream input, long size) throws IOException {
+        skipFully(input, size + tarPadding(size));
+    }
+
+    private void skipTarPadding(InputStream input, long size) throws IOException {
+        skipFully(input, tarPadding(size));
+    }
+
+    private long tarPadding(long size) {
+        long remainder = size % 512;
+        return remainder == 0 ? 0 : 512 - remainder;
+    }
+
+    private void skipFully(InputStream input, long bytes) throws IOException {
+        long remaining = bytes;
+        while (remaining > 0) {
+            long skipped = input.skip(remaining);
+            if (skipped <= 0) {
+                if (input.read() == -1) throw new IOException("unexpected end of archive");
+                skipped = 1;
+            }
+            remaining -= skipped;
+        }
+    }
+
+    private void copyFile(File source, File target) throws IOException {
+        try (InputStream input = new FileInputStream(source);
+             OutputStream output = new FileOutputStream(target)) {
+            byte[] buffer = new byte[65536];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                output.write(buffer, 0, read);
             }
         }
     }

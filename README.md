@@ -30,12 +30,17 @@ Keep those artifacts local or rebuild them from the scripts in `comiled-bianarie
 The source tree expects Android SDK/NDK paths from your local environment. Do not commit `local.properties`.
 
 Runtime payloads are no longer bundled inside the APK. First launch downloads
-only the device ABI payload from the `runtime-v8` GitHub release:
+only the selected device ABI payload:
 
+Basic Python runtime (`runtime-v8`):
 - `aqua-runtime-x86_64-v8.zip`
 - `aqua-runtime-arm64-v8a-v8.zip`
 
-Regenerate those release files with:
+Extended compiler runtime (`runtime-v9`):
+- `aqua-runtime-x86_64-v9.tar.zst`
+- `aqua-runtime-arm64-v8a-v9.tar.zst`
+
+Regenerate extended release files with:
 
 ```bash
 tools/package-runtime-payloads.sh
