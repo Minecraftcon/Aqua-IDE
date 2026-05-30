@@ -32,6 +32,12 @@ if [[ ! -d "$NDK" ]]; then
   scripts/setup-android-sdk.sh
 fi
 
+if [[ ! -w /data ]]; then
+  sudo mkdir -p /data
+  sudo chown "$USER" /data
+fi
+mkdir -p /data/data/.built-packages
+
 read -r -a requested_packages <<< "$AQUA_APT_PACKAGES"
 package_dirs="$(jq --raw-output 'del(.pkg_format) | keys | .[]' repo.json)"
 packages=()
