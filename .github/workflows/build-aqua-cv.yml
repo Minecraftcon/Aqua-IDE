@@ -1,4 +1,4 @@
-name: Build Aqua CV packages
+name: Build Aqua packages
 
 on:
   workflow_dispatch:
@@ -7,12 +7,16 @@ on:
         description: "Space-separated Termux arches"
         required: true
         default: "aarch64 x86_64"
+      packages:
+        description: "Space-separated package names, blank uses Aqua defaults"
+        required: false
+        default: ""
 
 permissions:
   contents: write
 
 jobs:
-  build-cv:
+  build-packages:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -20,10 +24,11 @@ jobs:
       - name: Install host tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y asciidoc-base automake autopoint bc bison ccache cmake gettext git gperf help2man libtool lzip ninja-build pkg-config python3 python3-pip rsync texinfo unzip wget
-      - name: Build CV packages
+          sudo apt-get install -y asciidoc-base automake autopoint bc bison ccache cmake gettext git gperf help2man jq libtool lzip ninja-build pkg-config python3 python3-pip rsync texinfo unzip wget
+      - name: Build Aqua packages
         env:
           AQUA_CV_ARCHES: ${{ inputs.arches }}
+          AQUA_APT_PACKAGES: ${{ inputs.packages }}
         run: |
           comiled-bianaries/build-aqua-cv-packages.sh
           comiled-bianaries/update-aqua-package-repos.sh

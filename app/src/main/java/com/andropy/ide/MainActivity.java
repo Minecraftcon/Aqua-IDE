@@ -2004,6 +2004,7 @@ public class MainActivity extends Activity {
         varLibRoot.mkdirs();
         varLibDpkgRoot.mkdirs();
         new File(etcRoot, "apt/apt.conf.d").mkdirs();
+        new File(etcRoot, "apt/preferences.d").mkdirs();
         new File(varLibDpkgRoot, "info").mkdirs();
         new File(varLibDpkgRoot, "triggers").mkdirs();
         new File(varLibDpkgRoot, "updates").mkdirs();
