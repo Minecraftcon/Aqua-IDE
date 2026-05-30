@@ -25,6 +25,10 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      - name: Add Termux Java compatibility path
+        run: |
+          sudo mkdir -p /usr/lib/jvm
+          sudo ln -sfn "$JAVA_HOME" /usr/lib/jvm/java-17-openjdk-amd64
       - name: Install host tools
         run: |
           sudo apt-get update
