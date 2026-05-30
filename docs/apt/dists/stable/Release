@@ -1,0 +1,22 @@
+Origin: Aqua IDE
+Label: Aqua IDE
+Suite: stable
+Codename: stable
+Date: Sat, 30 May 2026 16:34:46 +0000
+Architectures: all aarch64 x86_64
+Components: main
+Description: Aqua IDE Android package repository
+MD5Sum:
+ d41d8cd98f00b204e9800998ecf8427e                0 main/binary-aarch64/Packages
+ c069b996222ad37a032799fbb6c35c6b               29 main/binary-aarch64/Packages.gz
+ d41d8cd98f00b204e9800998ecf8427e                0 main/binary-all/Packages
+ c069b996222ad37a032799fbb6c35c6b               29 main/binary-all/Packages.gz
+ d41d8cd98f00b204e9800998ecf8427e                0 main/binary-x86_64/Packages
+ 744e14e3487bd77f2e98ca23620383ec               29 main/binary-x86_64/Packages.gz
+SHA256:
+ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855                0 main/binary-aarch64/Packages
+ 78649f0270429c0669e6d1444b47c2d9e1659c4b452be383fc754a1eb1ef442f               29 main/binary-aarch64/Packages.gz
+ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855                0 main/binary-all/Packages
+ 78649f0270429c0669e6d1444b47c2d9e1659c4b452be383fc754a1eb1ef442f               29 main/binary-all/Packages.gz
+ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855                0 main/binary-x86_64/Packages
+ d109fc8bcc53b7f4b89aab358776d4d2833df19633a72f9bdfc1c804a74ebf83               29 main/binary-x86_64/Packages.gz

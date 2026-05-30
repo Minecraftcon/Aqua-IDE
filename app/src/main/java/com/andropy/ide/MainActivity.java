@@ -85,9 +85,12 @@ public class MainActivity extends Activity {
     private static final String DEFAULT_FILE = "new.py";
     private static final String PREFIX_DIR = "usr";
     private static final String RUNTIME_BASIC_VERSION = "andropy-basic-runtime-8";
-    private static final String RUNTIME_EXTENDED_VERSION = "andropy-extended-runtime-9";
+    private static final String RUNTIME_EXTENDED_VERSION = "andropy-extended-runtime-10";
     private static final String RUNTIME_BASIC_RELEASE_BASE = "https://github.com/Minecraftcon/Aqua-IDE/releases/download/runtime-v8/";
     private static final String RUNTIME_EXTENDED_RELEASE_BASE = "https://github.com/Minecraftcon/Aqua-IDE/releases/download/runtime-v9/";
+    private static final String AQUA_PYTHON_INDEX = "https://raw.githubusercontent.com/Minecraftcon/Aqua-IDE/main/docs/python/simple";
+    private static final String PYPI_INDEX = "https://pypi.org/simple";
+    private static final String AQUA_APT_REPO = "https://raw.githubusercontent.com/Minecraftcon/Aqua-IDE/main/docs/apt";
     private static final String RUNTIME_BASIC_X86_64_ZIP = "aqua-runtime-x86_64-v8.zip";
     private static final String RUNTIME_BASIC_ARM64_ZIP = "aqua-runtime-arm64-v8a-v8.zip";
     private static final String RUNTIME_EXTENDED_X86_64_ZIP = "aqua-runtime-x86_64-v9.tar.zst";
@@ -2000,6 +2003,7 @@ public class MainActivity extends Activity {
         new File(varCacheRoot, "apt/archives/partial").mkdirs();
         varLibRoot.mkdirs();
         varLibDpkgRoot.mkdirs();
+        new File(etcRoot, "apt/apt.conf.d").mkdirs();
         new File(varLibDpkgRoot, "info").mkdirs();
         new File(varLibDpkgRoot, "triggers").mkdirs();
         new File(varLibDpkgRoot, "updates").mkdirs();
@@ -2164,6 +2168,18 @@ public class MainActivity extends Activity {
 
     private void installPipLaunchers() {
         String script = "#!/system/bin/sh\n"
+                + "[ -n \"$PREFIX\" ] || PREFIX=\"/data/data/" + getPackageName() + "/files/usr\"\n"
+                + "export PIP_CONFIG_FILE=\"$PREFIX/etc/pip.conf\"\n"
+                + "binary_only=0\n"
+                + "for arg in \"$@\"; do\n"
+                + "  case \"$arg\" in opencv-python|opencv-python-headless|cv2|numpy) binary_only=1 ;; esac\n"
+                + "done\n"
+                + "case \" $* \" in\n"
+                + "  *\" opencv-python \"*|*\" cv2 \"*) echo \"Aqua CV: resolving OpenCV from the Aqua wheel index first\" >&2 ;;\n"
+                + "esac\n"
+                + "if [ \"$binary_only\" = 1 ]; then\n"
+                + "  exec python -m pip --only-binary=:all: \"$@\"\n"
+                + "fi\n"
                 + "exec python -m pip \"$@\"\n";
         installExecutableScript("pip", script);
         installExecutableScript("pip3", script);
@@ -2204,24 +2220,34 @@ public class MainActivity extends Activity {
                         + "export ANDROID_ROOT=\"/system\"\n"
                         + "mkdir -p \"$PREFIX/tmp\" \"$PREFIX/var/tmp\" \"$PREFIX/var/run\" \"$PREFIX/var/log\" 2>/dev/null\n");
         writeText(new File(etcRoot, "andropy-bootstrap-packages"),
-                "bash\nbzip2\ncommand-not-found\ncoreutils\ncurl\ndash\ndebianutils\ndiffutils\n"
+                "apt\nbash\nbzip2\ncommand-not-found\ncoreutils\ncurl\ndash\ndebianutils\ndiffutils\n"
                         + "dos2unix\ned\nfindutils\ngawk\ngrep\ngzip\ninetutils\nless\nlsof\nnano\n"
                         + "net-tools\npatch\nprocps\npsmisc\nsed\ntar\nunzip\nutil-linux\nxz-utils\n"
-                        + "clang\nlibllvm\nlld\nllvm\nmake\npkg-config\n");
-        writeText(new File(etcRoot, "apt/sources.list.disabled"),
-                "# Upstream bootstrap repositories are disabled for this app build.\n"
-                        + "# AndroPy packages will be published for /data/data/" + getPackageName() + "/files/usr.\n");
+                        + "clang\ndpkg\nlibllvm\nlld\nllvm\nmake\npkg-config\n");
+        writeText(new File(etcRoot, "pip.conf"),
+                "[global]\n"
+                        + "index-url = " + AQUA_PYTHON_INDEX + "\n"
+                        + "extra-index-url = " + PYPI_INDEX + "\n"
+                        + "prefer-binary = true\n"
+                        + "disable-pip-version-check = true\n"
+                        + "timeout = 60\n"
+                        + "\n"
+                        + "[install]\n"
+                        + "prefer-binary = true\n");
         writeText(new File(etcRoot, "apt/sources.list"),
-                "# AndroPy package sources are disabled until the app repository is ready for:\n"
-                        + "# /data/data/" + getPackageName() + "/files/usr\n");
+                "deb [trusted=yes] " + AQUA_APT_REPO + " stable main\n");
         writeText(new File(etcRoot, "apt/apt.conf"),
                 "Dir \"/data/data/" + getPackageName() + "/files/usr\";\n"
                         + "Dir::Etc \"etc/apt\";\n"
                         + "Dir::State \"var/lib/apt\";\n"
                         + "Dir::Cache \"var/cache/apt\";\n"
+                        + "Dir::Temp \"/data/data/" + getPackageName() + "/files/usr/tmp\";\n"
+                        + "Dir::Etc::parts \"apt.conf.d\";\n"
                         + "Dir::State::status \"/data/data/" + getPackageName() + "/files/usr/var/lib/dpkg/status\";\n"
                         + "Dir::Bin::methods \"/data/data/" + getPackageName() + "/files/usr/lib/apt/methods\";\n"
                         + "APT::Sandbox::User \"root\";\n");
+        writeText(new File(etcRoot, "apt/apt.conf.d/00-aqua-https"),
+                "Acquire::https::CaInfo \"/data/data/" + getPackageName() + "/files/usr/etc/tls/cert.pem\";\n");
         installExecutableScript("andropy-bootstrap-info",
                 "#!/system/bin/sh\n"
                         + "[ -n \"$PREFIX\" ] || PREFIX=\"/data/data/" + getPackageName() + "/files/usr\"\n"
@@ -2229,29 +2255,18 @@ public class MainActivity extends Activity {
                         + "echo \"PREFIX=$PREFIX\"\n"
                         + "echo \"HOME=$HOME\"\n"
                         + "echo \"Variant: andropy-native-userland\"\n"
-                        + "echo \"Package manager: disabled until the AndroPy repository is ready\"\n"
+                        + "echo \"APT repo: " + AQUA_APT_REPO + "\"\n"
+                        + "echo \"Python index: " + AQUA_PYTHON_INDEX + " + " + PYPI_INDEX + "\"\n"
                         + "echo \"Packaged now: bash, GNU coreutils, clang/LLVM, make, nano, Python\"\n"
                         + "echo \"Bootstrap payload:\"\n"
                         + "cat \"$PREFIX/etc/andropy-bootstrap-packages\" 2>/dev/null\n");
-        installDisabledPackageManagerCommands();
         installNativePlaceholder("pkg");
-        installNativePlaceholder("apt");
-        installNativePlaceholder("dpkg");
         installNativePlaceholder("clang");
         installNativePlaceholder("clang++");
         installNativePlaceholder("llvm-config");
         installNativePlaceholder("gcc");
         installNativePlaceholder("g++");
         installNativePlaceholder("make");
-    }
-
-    private void installDisabledPackageManagerCommands() {
-        String script = "#!/system/bin/sh\n"
-                + "echo \"AndroPy package manager is disabled in this build.\"\n"
-                + "echo \"A native AndroPy repository will be added later.\"\n"
-                + "exit 1\n";
-        String[] commands = new String[]{"apt", "apt-get", "apt-cache", "apt-config", "apt-mark", "apt-key", "pkg"};
-        for (String command : commands) installExecutableScript(command, script);
     }
 
     private void installExecutableScript(String name, String content) {

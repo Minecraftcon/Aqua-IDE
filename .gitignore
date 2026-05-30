@@ -20,6 +20,7 @@ release-assets/
 
 # Cross-compile downloads, caches, extracted userlands, and build products
 comiled-bianaries/build/
+comiled-bianaries/.aqua-cv-build/
 comiled-bianaries/out/
 comiled-bianaries/stage/
 comiled-bianaries/src/
