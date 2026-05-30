@@ -88,9 +88,9 @@ public class MainActivity extends Activity {
     private static final String RUNTIME_EXTENDED_VERSION = "andropy-extended-runtime-10";
     private static final String RUNTIME_BASIC_RELEASE_BASE = "https://github.com/Minecraftcon/Aqua-IDE/releases/download/runtime-v8/";
     private static final String RUNTIME_EXTENDED_RELEASE_BASE = "https://github.com/Minecraftcon/Aqua-IDE/releases/download/runtime-v9/";
-    private static final String AQUA_PYTHON_INDEX = "https://raw.githubusercontent.com/Minecraftcon/Aqua-IDE/main/docs/python/simple";
+    private static final String AQUA_PYTHON_INDEX = "https://minecraftcon.github.io/Aqua-IDE/python/simple";
     private static final String PYPI_INDEX = "https://pypi.org/simple";
-    private static final String AQUA_APT_REPO = "https://raw.githubusercontent.com/Minecraftcon/Aqua-IDE/main/docs/apt";
+    private static final String AQUA_APT_REPO = "https://minecraftcon.github.io/Aqua-IDE/apt";
     private static final String RUNTIME_BASIC_X86_64_ZIP = "aqua-runtime-x86_64-v8.zip";
     private static final String RUNTIME_BASIC_ARM64_ZIP = "aqua-runtime-arm64-v8a-v8.zip";
     private static final String RUNTIME_EXTENDED_X86_64_ZIP = "aqua-runtime-x86_64-v9.tar.zst";
