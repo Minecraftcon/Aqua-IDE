@@ -1,0 +1,38 @@
+name: Build Aqua CV packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      arches:
+        description: "Space-separated Termux arches"
+        required: true
+        default: "aarch64 x86_64"
+
+permissions:
+  contents: write
+
+jobs:
+  build-cv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y asciidoc-base automake autopoint bc bison ccache cmake gettext git gperf help2man libtool lzip ninja-build pkg-config python3 python3-pip rsync texinfo unzip wget
+      - name: Build CV packages
+        env:
+          AQUA_CV_ARCHES: ${{ inputs.arches }}
+        run: |
+          comiled-bianaries/build-aqua-cv-packages.sh
+          comiled-bianaries/update-aqua-package-repos.sh
+      - name: Commit package indexes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs comiled-bianaries/out/aqua-cv || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Publish Aqua CV packages"
+            git push
+          fi
