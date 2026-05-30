@@ -7,6 +7,10 @@ android {
     compileSdk 34
     ndkVersion "25.2.9519653"
 
+    buildFeatures {
+        buildConfig true
+    }
+
     defaultConfig {
         applicationId "com.andropy.ide"
         minSdk 26
@@ -16,6 +20,23 @@ android {
 
         ndk {
             abiFilters "x86_64", "arm64-v8a"
+        }
+    }
+
+    buildTypes {
+        debug {
+            buildConfigField "boolean", "ANDROPY_PREBUNDLED_RUNTIME", "true"
+            buildConfigField "boolean", "ANDROPY_SKIP_RUNTIME_CHECK", "true"
+        }
+        release {
+            buildConfigField "boolean", "ANDROPY_PREBUNDLED_RUNTIME", "false"
+            buildConfigField "boolean", "ANDROPY_SKIP_RUNTIME_CHECK", "false"
+        }
+    }
+
+    sourceSets {
+        debug {
+            assets.srcDirs += ["../release-assets/runtime-v9"]
         }
     }
 

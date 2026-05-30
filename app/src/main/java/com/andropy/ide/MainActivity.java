@@ -1,6 +1,7 @@
 package com.andropy.ide;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.SharedPreferences;
@@ -37,6 +38,7 @@ import android.widget.ImageView;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.LinearLayout;
+import android.widget.PopupMenu;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -64,11 +66,13 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Random;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
@@ -194,6 +198,10 @@ public class MainActivity extends Activity {
     private boolean fileManagerVisible;
     private File fileManagerCurrentDir;
     private String fileManagerCurrentTitle;
+    private LinearLayout fileManagerScreenBody;
+    private final Set<String> selectedFilePaths = new HashSet<>();
+    private final ArrayList<File> pendingFileOperationSources = new ArrayList<>();
+    private String pendingFileOperation;
     private boolean bootstrapShowingOutput;
     private boolean bootstrapDownloading;
     private String terminalStartupCommand;
@@ -210,10 +218,17 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         selectedRuntimeProfile = prefs.getInt("runtime_profile", RUNTIME_BASIC);
+        if (BuildConfig.ANDROPY_PREBUNDLED_RUNTIME) {
+            selectedRuntimeProfile = RUNTIME_EXTENDED;
+            prefs.edit().putInt("runtime_profile", selectedRuntimeProfile).apply();
+        }
         initProjectRoots();
         if (runtimeReady()) {
             ensureProjectRoots();
             showEditorAfterBootstrap();
+        } else if (BuildConfig.ANDROPY_SKIP_RUNTIME_CHECK) {
+            setContentView(buildBootstrapScreen());
+            beginRuntimeInstall();
         } else {
             setContentView(buildBootstrapScreen());
             startBootstrap();
@@ -589,8 +604,9 @@ public class MainActivity extends Activity {
         fileManagerVisible = true;
         fileManagerCurrentDir = null;
         fileManagerCurrentTitle = "Directory";
+        selectedFilePaths.clear();
 
-        LinearLayout root = fileManagerBase("Directory", v -> showEditor());
+        FrameLayout root = fileManagerBase("Directory", v -> showEditor());
         LinearLayout content = fileManagerContent(root);
         File sdcard = new File("/sdcard");
 
@@ -616,19 +632,12 @@ public class MainActivity extends Activity {
         fileManagerCurrentDir = directory;
         fileManagerCurrentTitle = title;
 
-        LinearLayout root = fileManagerBase(title, v -> {
-            if (directory.equals(new File("/sdcard")) || directory.equals(homeRoot)) {
-                showFileManagerRoot();
-            } else {
-                File parent = directory.getParentFile();
-                showDirectory(parent == null ? homeRoot : parent, parent == null ? "Directory" : parent.getName());
-            }
-        });
+        FrameLayout root = fileManagerBase(title, v -> navigateFileManagerBack(directory));
         LinearLayout content = fileManagerContent(root);
 
         File parent = directory.getParentFile();
         if (parent != null && !directory.equals(new File("/sdcard")) && !directory.equals(homeRoot)) {
-            content.addView(fileEntryRow(parent, "..", "Folder", true));
+            content.addView(fileEntryRow(parent, "..", "Folder", true, false));
         }
 
         File[] children = directory.listFiles();
@@ -652,10 +661,14 @@ public class MainActivity extends Activity {
         return root;
     }
 
-    private LinearLayout fileManagerBase(String title, View.OnClickListener backClick) {
+    private FrameLayout fileManagerBase(String title, View.OnClickListener backClick) {
+        FrameLayout shell = new FrameLayout(this);
+        shell.setBackgroundColor(PANEL_BG);
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(PANEL_BG);
+        fileManagerScreenBody = root;
 
         LinearLayout topBar = new LinearLayout(this);
         topBar.setOrientation(LinearLayout.HORIZONTAL);
@@ -680,18 +693,56 @@ public class MainActivity extends Activity {
         titleView.setGravity(Gravity.CENTER_VERTICAL);
         titleView.setPadding(dp(14), 0, 0, 0);
         topBar.addView(titleView, new LinearLayout.LayoutParams(0, dp(54), 1));
+
+        if (fileManagerCurrentDir != null) {
+            ImageButton add = headerIcon("ic_add_24", "New");
+            add.setOnClickListener(v -> showCreateMenu(add));
+            topBar.addView(add, new LinearLayout.LayoutParams(dp(40), dp(40)));
+
+            ImageButton more = headerIcon("ic_more_vert_24", "More");
+            more.setOnClickListener(v -> showFileActionMenu(more));
+            topBar.addView(more, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        }
+
         root.addView(topBar, new LinearLayout.LayoutParams(-1, dp(54)));
-        return root;
+        shell.addView(root, new FrameLayout.LayoutParams(-1, -1));
+
+        if (pendingFileOperation != null && fileManagerCurrentDir != null) {
+            ImageButton commit = new ImageButton(this);
+            commit.setImageResource(getResources().getIdentifier("ic_done_24", "drawable", getPackageName()));
+            commit.setColorFilter(Color.rgb(24, 28, 34));
+            commit.setBackground(rounded(YELLOW_DIVIDER, Color.TRANSPARENT, 0, 28));
+            commit.setContentDescription("Use this folder");
+            commit.setPadding(dp(12), dp(12), dp(12), dp(12));
+            commit.setElevation(dp(8));
+            commit.setOnClickListener(v -> finishPendingFileOperation(fileManagerCurrentDir));
+            FrameLayout.LayoutParams commitParams = new FrameLayout.LayoutParams(dp(56), dp(56));
+            commitParams.gravity = Gravity.BOTTOM | Gravity.START;
+            commitParams.setMargins(dp(18), 0, 0, dp(22));
+            shell.addView(commit, commitParams);
+        }
+
+        return shell;
     }
 
-    private LinearLayout fileManagerContent(LinearLayout root) {
+    private ImageButton headerIcon(String iconName, String description) {
+        ImageButton button = new ImageButton(this);
+        button.setImageResource(getResources().getIdentifier(iconName, "drawable", getPackageName()));
+        button.setColorFilter(TEXT);
+        button.setBackgroundColor(PANEL_HEADER);
+        button.setContentDescription(description);
+        button.setPadding(dp(8), dp(8), dp(8), dp(8));
+        return button;
+    }
+
+    private LinearLayout fileManagerContent(FrameLayout shell) {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(0, dp(18), 0, dp(28));
+        content.setPadding(0, dp(18), 0, pendingFileOperation == null ? dp(28) : dp(96));
         scroll.addView(content, new ScrollView.LayoutParams(-1, -2));
-        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        fileManagerScreenBody.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         return content;
     }
 
@@ -703,10 +754,28 @@ public class MainActivity extends Activity {
     }
 
     private View fileEntryRow(File file, String name, String detail, boolean folder) {
+        return fileEntryRow(file, name, detail, folder, true);
+    }
+
+    private View fileEntryRow(File file, String name, String detail, boolean folder, boolean selectable) {
         LinearLayout row = managerRowBase(v -> {
-            if (file.isDirectory()) showDirectory(file, name);
-            else openFileInEditor(file);
+            if (!selectedFilePaths.isEmpty()) {
+                if (selectable) toggleFileSelection(file);
+            } else if (file.isDirectory()) {
+                clearFileSelection();
+                showDirectory(file, name);
+            } else {
+                openFileInEditor(file);
+            }
         });
+        row.setOnLongClickListener(v -> {
+            if (!selectable) return false;
+            toggleFileSelection(file);
+            return true;
+        });
+        if (isFileSelected(file)) {
+            row.setBackgroundColor(Color.rgb(70, 76, 86));
+        }
         row.addView(fileIcon(folder ? "ic_folder_24" : "ic_file_24"), new LinearLayout.LayoutParams(dp(54), dp(54)));
         row.addView(fileTextBlock(name, detail, null), new LinearLayout.LayoutParams(0, -2, 1));
         return row;
@@ -769,6 +838,169 @@ public class MainActivity extends Activity {
     private void showDirectory(File directory, String title) {
         hideKeyboard();
         setContentView(buildDirectoryScreen(directory, title == null || title.isEmpty() ? directory.getName() : title));
+    }
+
+    private void refreshFileManager() {
+        if (fileManagerCurrentDir == null) {
+            setContentView(buildFileRootScreen());
+        } else {
+            setContentView(buildDirectoryScreen(fileManagerCurrentDir, fileManagerCurrentTitle));
+        }
+    }
+
+    private void clearFileSelection() {
+        selectedFilePaths.clear();
+    }
+
+    private boolean isFileSelected(File file) {
+        return selectedFilePaths.contains(file.getAbsolutePath());
+    }
+
+    private void toggleFileSelection(File file) {
+        if (file == null || "..".equals(file.getName())) return;
+        String path = file.getAbsolutePath();
+        if (selectedFilePaths.contains(path)) selectedFilePaths.remove(path);
+        else selectedFilePaths.add(path);
+        refreshFileManager();
+    }
+
+    private ArrayList<File> selectedFiles() {
+        ArrayList<File> files = new ArrayList<>();
+        for (String path : selectedFilePaths) files.add(new File(path));
+        return files;
+    }
+
+    private void navigateFileManagerBack(File directory) {
+        if (!selectedFilePaths.isEmpty()) {
+            clearFileSelection();
+            refreshFileManager();
+            return;
+        }
+        if (directory.equals(new File("/sdcard")) || directory.equals(homeRoot)) {
+            showFileManagerRoot();
+        } else {
+            File parent = directory.getParentFile();
+            showDirectory(parent == null ? homeRoot : parent, parent == null ? "Directory" : parent.getName());
+        }
+    }
+
+    private void showCreateMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        menu.getMenu().add("New folder");
+        menu.getMenu().add("New file");
+        menu.setOnMenuItemClickListener(item -> {
+            String title = String.valueOf(item.getTitle());
+            if ("New folder".equals(title)) showCreateDialog(true);
+            else showCreateDialog(false);
+            return true;
+        });
+        menu.show();
+    }
+
+    private void showCreateDialog(boolean folder) {
+        if (fileManagerCurrentDir == null) return;
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setHint(folder ? "folder name" : "file name");
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        input.setPadding(dp(18), dp(10), dp(18), dp(10));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(folder ? "New folder" : "New file")
+                .setView(input)
+                .setPositiveButton("Create", null)
+                .setNegativeButton("Cancel", null)
+                .create();
+        dialog.setOnShowListener(d -> {
+            input.requestFocus();
+            InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (imm != null) imm.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT);
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String name = input.getText().toString().trim();
+                if (name.isEmpty() || name.contains("/") || name.contains("\\")) {
+                    Toast.makeText(this, "Invalid name", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                File target = new File(fileManagerCurrentDir, name);
+                if (target.exists()) {
+                    Toast.makeText(this, "Already exists", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                boolean ok;
+                try {
+                    ok = folder ? target.mkdirs() : target.createNewFile();
+                } catch (IOException e) {
+                    ok = false;
+                }
+                Toast.makeText(this, ok ? "Created" : "Create failed", Toast.LENGTH_SHORT).show();
+                if (ok) {
+                    dialog.dismiss();
+                    refreshFileManager();
+                }
+            });
+        });
+        dialog.show();
+    }
+
+    private void showFileActionMenu(View anchor) {
+        if (selectedFilePaths.isEmpty() && pendingFileOperation == null) {
+            Toast.makeText(this, "Select files first", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        PopupMenu menu = new PopupMenu(this, anchor);
+        if (!selectedFilePaths.isEmpty()) {
+            menu.getMenu().add("Copy");
+            menu.getMenu().add("Move");
+            menu.getMenu().add("Delete");
+        }
+        if (pendingFileOperation != null) menu.getMenu().add("Paste");
+        menu.setOnMenuItemClickListener(item -> {
+            String action = String.valueOf(item.getTitle()).toLowerCase(Locale.US);
+            if ("copy".equals(action) || "move".equals(action)) {
+                beginPendingFileOperation(action);
+            } else if ("paste".equals(action)) {
+                finishPendingFileOperation(fileManagerCurrentDir);
+            } else if ("delete".equals(action)) {
+                deleteSelectedFiles();
+            }
+            return true;
+        });
+        menu.show();
+    }
+
+    private void beginPendingFileOperation(String operation) {
+        pendingFileOperationSources.clear();
+        pendingFileOperationSources.addAll(selectedFiles());
+        pendingFileOperation = operation;
+        clearFileSelection();
+        Toast.makeText(this, "Open destination folder", Toast.LENGTH_SHORT).show();
+        refreshFileManager();
+    }
+
+    private void finishPendingFileOperation(File destination) {
+        if (destination == null || pendingFileOperation == null || pendingFileOperationSources.isEmpty()) return;
+        int completed = 0;
+        for (File source : new ArrayList<>(pendingFileOperationSources)) {
+            if (!source.exists() || isSameOrChild(destination, source)) continue;
+            File target = uniqueDestination(destination, source.getName());
+            boolean ok = "move".equals(pendingFileOperation) ? movePath(source, target) : copyPath(source, target);
+            if (ok) completed++;
+        }
+        String label = "move".equals(pendingFileOperation) ? "Moved " : "Copied ";
+        pendingFileOperation = null;
+        pendingFileOperationSources.clear();
+        Toast.makeText(this, label + completed, Toast.LENGTH_SHORT).show();
+        refreshFileManager();
+    }
+
+    private void deleteSelectedFiles() {
+        int deleted = 0;
+        for (File file : selectedFiles()) {
+            if (deletePath(file)) deleted++;
+        }
+        clearFileSelection();
+        Toast.makeText(this, "Deleted " + deleted, Toast.LENGTH_SHORT).show();
+        refreshFileManager();
     }
 
     private void openFileInEditor(File file) {
@@ -1438,6 +1670,74 @@ public class MainActivity extends Activity {
         }
     }
 
+    private File uniqueDestination(File destination, String name) {
+        File target = new File(destination, name);
+        if (!target.exists()) return target;
+        int dot = name.lastIndexOf('.');
+        String base = dot > 0 ? name.substring(0, dot) : name;
+        String ext = dot > 0 ? name.substring(dot) : "";
+        for (int i = 1; i < 1000; i++) {
+            File candidate = new File(destination, base + " copy" + (i == 1 ? "" : " " + i) + ext);
+            if (!candidate.exists()) return candidate;
+        }
+        return new File(destination, base + " copy " + System.currentTimeMillis() + ext);
+    }
+
+    private boolean copyPath(File source, File target) {
+        try {
+            if (source.isDirectory()) {
+                if (!target.mkdirs() && !target.isDirectory()) return false;
+                File[] children = source.listFiles();
+                if (children != null) {
+                    for (File child : children) {
+                        if (!copyPath(child, new File(target, child.getName()))) return false;
+                    }
+                }
+                return true;
+            }
+            File parent = target.getParentFile();
+            if (parent != null && !parent.exists() && !parent.mkdirs()) return false;
+            try (InputStream input = new FileInputStream(source);
+                 OutputStream output = new FileOutputStream(target)) {
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
+            }
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private boolean movePath(File source, File target) {
+        File parent = target.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) return false;
+        if (source.renameTo(target)) return true;
+        if (!copyPath(source, target)) return false;
+        return deletePath(source);
+    }
+
+    private boolean deletePath(File file) {
+        if (file == null || !file.exists()) return false;
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) {
+                for (File child : children) deletePath(child);
+            }
+        }
+        return file.delete();
+    }
+
+    private boolean isSameOrChild(File child, File parent) {
+        try {
+            String childPath = child.getCanonicalPath();
+            String parentPath = parent.getCanonicalPath();
+            return childPath.equals(parentPath) || childPath.startsWith(parentPath + File.separator);
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
     private void showEditor() {
         terminalVisible = false;
         fileManagerVisible = false;
@@ -2002,9 +2302,15 @@ public class MainActivity extends Activity {
 
             File payload = new File(getCacheDir(), runtimeZipName());
             if (!payload.isFile() || payload.length() == 0) {
-                setBootstrapProgress(0.36f, "Downloading " + runtimeAbiName() + " runtime");
-                appendBootstrapOutput("$ download-runtime " + runtimeDownloadUrl());
-                downloadRuntimePayload(payload);
+                if (BuildConfig.ANDROPY_PREBUNDLED_RUNTIME) {
+                    setBootstrapProgress(0.36f, "Loading bundled " + runtimeAbiName() + " runtime");
+                    appendBootstrapOutput("$ load-bundled-runtime " + runtimeZipName());
+                    copyBundledRuntimePayload(payload);
+                } else {
+                    setBootstrapProgress(0.36f, "Downloading " + runtimeAbiName() + " runtime");
+                    appendBootstrapOutput("$ download-runtime " + runtimeDownloadUrl());
+                    downloadRuntimePayload(payload);
+                }
             }
             setBootstrapProgress(0.62f, "Extracting " + runtimeAbiName() + " runtime");
             appendBootstrapOutput("$ extract-runtime " + payload.getName());
@@ -2050,6 +2356,19 @@ public class MainActivity extends Activity {
 
     private String runtimeAssetVersion() {
         return selectedRuntimeProfile == RUNTIME_EXTENDED ? RUNTIME_EXTENDED_VERSION : RUNTIME_BASIC_VERSION;
+    }
+
+    private void copyBundledRuntimePayload(File target) throws IOException {
+        File parent = target.getParentFile();
+        if (parent != null) parent.mkdirs();
+        try (InputStream input = getAssets().open(runtimeZipName());
+             FileOutputStream output = new FileOutputStream(target)) {
+            byte[] buffer = new byte[65536];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                output.write(buffer, 0, read);
+            }
+        }
     }
 
     private void downloadRuntimePayload(File target) throws IOException {
@@ -2488,14 +2807,13 @@ public class MainActivity extends Activity {
     @Override
     public void onBackPressed() {
         if (fileManagerVisible) {
+            if (!selectedFilePaths.isEmpty()) {
+                clearFileSelection();
+                refreshFileManager();
+                return;
+            }
             if (fileManagerCurrentDir != null) {
-                File sdcard = new File("/sdcard");
-                if (fileManagerCurrentDir.equals(sdcard) || fileManagerCurrentDir.equals(homeRoot)) {
-                    showFileManagerRoot();
-                } else {
-                    File parent = fileManagerCurrentDir.getParentFile();
-                    showDirectory(parent == null ? homeRoot : parent, parent == null ? "Directory" : parent.getName());
-                }
+                navigateFileManagerBack(fileManagerCurrentDir);
             } else {
                 showEditor();
             }
