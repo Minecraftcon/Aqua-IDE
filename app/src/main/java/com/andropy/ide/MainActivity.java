@@ -756,7 +756,7 @@ public class MainActivity extends Activity {
 
         termuxTerminalView = new com.termux.view.TerminalView(this, null);
         termuxTerminalView.setTerminalViewClient(new AndroPyTerminalViewClient());
-        termuxTerminalView.setTextSize(dp(15));
+        termuxTerminalView.setTextSize(dp(14));
         termuxTerminalView.setTypeface(Typeface.MONOSPACE);
         termuxTerminalView.setFocusable(true);
         termuxTerminalView.setFocusableInTouchMode(true);
@@ -1196,6 +1196,7 @@ public class MainActivity extends Activity {
                 "FORCE_COLOR=1",
                 "LS_COLORS=" + lsColors(),
                 "TMPDIR=" + tmpRoot.getAbsolutePath(),
+                "GIT_CEILING_DIRECTORIES=" + homeRoot.getAbsolutePath() + ":" + prefixRoot.getAbsolutePath(),
                 "TERM=xterm-256color"
         };
 
@@ -1204,7 +1205,7 @@ public class MainActivity extends Activity {
                 homeRealRoot.getAbsolutePath(),
                 args,
                 env,
-                TerminalEmulator.DEFAULT_TERMINAL_TRANSCRIPT_ROWS,
+                400,
                 new AndroPyTerminalSessionClient());
         termuxTerminalView.attachSession(termuxSession);
         applyTerminalColors();
@@ -1342,6 +1343,7 @@ public class MainActivity extends Activity {
             writer.write("export LANG=\"C.UTF-8\"\n");
             writer.write("export LC_ALL=\"C.UTF-8\"\n");
             writer.write("export TMPDIR=\"$PREFIX/tmp\"\n");
+            writer.write("export GIT_CEILING_DIRECTORIES=\"$HOME:$PREFIX\"\n");
             writer.write("[ -r \"$PREFIX/etc/profile\" ] && . \"$PREFIX/etc/profile\"\n");
             writer.write("cd \"$ANDROPY_HOME_REAL\" 2>/dev/null || cd \"$HOME\" 2>/dev/null\n");
             writer.write("export PWD=\"$HOME\"\n");
@@ -1365,10 +1367,10 @@ public class MainActivity extends Activity {
             writer.write("  printf '%s' \"$dir\"\n");
             writer.write("}\n");
             writer.write("__andropy_prompt_build() {\n");
-            writer.write("  local green bold_green cyan yellow magenta bold_blue reset user host clock dir\n");
-            writer.write("  green='\\[\\e[32m\\]'; bold_green='\\[\\e[1;32m\\]'; cyan='\\[\\e[36m\\]'; yellow='\\[\\e[33m\\]'; magenta='\\[\\e[35m\\]'; bold_blue='\\[\\e[1;34m\\]'; reset='\\[\\e[0m\\]'\n");
+            writer.write("  local green cyan yellow magenta blue reset user host clock dir\n");
+            writer.write("  green='\\[\\e[1;32m\\]'; cyan='\\[\\e[36m\\]'; yellow='\\[\\e[33m\\]'; magenta='\\[\\e[35m\\]'; blue='\\[\\e[1;34m\\]'; reset='\\[\\e[0m\\]'\n");
             writer.write("  user=${USER:-u0}; host=${HOSTNAME:-android}; clock=$(date +%H:%M:%S 2>/dev/null); dir=$(__andropy_prompt_dir)\n");
-            writer.write("  PS1=\"${bold_green}┌──(${cyan}${user}${bold_green}㉿${cyan}${host}${bold_green})-[${yellow}${clock}${bold_green}]-[${magenta}${dir}${bold_green}]${reset}\\n${bold_green}└${yellow}${__andropy_cmd_duration}${bold_green}─${bold_blue}\\$ ${reset}\"\n");
+            writer.write("  PS1=\"${green}${user}@${host}${reset}:${magenta}${dir}${reset} ${yellow}${clock}${reset} ${blue}\\$ ${reset}\"\n");
             writer.write("}\n");
         } catch (IOException ignored) {
         }
@@ -1887,15 +1889,12 @@ public class MainActivity extends Activity {
                     File linkTarget = new File(targetDir, linkName);
                     outputFile.delete();
                     try {
-                        Os.link(linkTarget.getAbsolutePath(), outputFile.getAbsolutePath());
+                        Os.symlink(linkTarget.getAbsolutePath(), outputFile.getAbsolutePath());
                     } catch (ErrnoException ignored) {
-                        if (linkTarget.isFile()) {
-                            copyFile(linkTarget, outputFile);
-                        } else {
-                            try {
-                                Os.symlink(linkTarget.getAbsolutePath(), outputFile.getAbsolutePath());
-                            } catch (ErrnoException ignoredToo) {
-                            }
+                        try {
+                            Os.link(linkTarget.getAbsolutePath(), outputFile.getAbsolutePath());
+                        } catch (ErrnoException ignoredToo) {
+                            if (linkTarget.isFile()) copyFile(linkTarget, outputFile);
                         }
                     }
                     applyTarMode(outputFile, mode);
