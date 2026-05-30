@@ -23,5 +23,5 @@ android {
 
 dependencies {
     implementation "com.termux.termux-app:terminal-view:0.118.0"
-    implementation "io.airlift:aircompressor:2.0.3"
+    implementation "com.github.luben:zstd-jni:1.5.7-9@aar"
 }

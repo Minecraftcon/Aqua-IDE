@@ -44,10 +44,11 @@ import com.termux.terminal.TerminalEmulator;
 import com.termux.terminal.TerminalSession;
 import com.termux.terminal.TerminalSessionClient;
 import com.termux.view.TerminalViewClient;
-import io.airlift.compress.zstd.ZstdInputStream;
+import com.github.luben.zstd.ZstdInputStream;
 
 import java.io.BufferedWriter;
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -266,7 +267,7 @@ public class MainActivity extends Activity {
         bootstrapRuntimeChoices.setOrientation(LinearLayout.VERTICAL);
         bootstrapRuntimeChoices.setVisibility(View.GONE);
         bootstrapRuntimeChoices.addView(runtimeChoiceRow(RUNTIME_BASIC, "Basic Python Runtime", "Coreutils, Python, pip. Small first install.", "16-17 MB", true));
-        bootstrapRuntimeChoices.addView(runtimeChoiceRow(RUNTIME_EXTENDED, "Extended Python Runtime", "LLVM, compilation tools, headers, sysroot.", "~373 MB", true));
+        bootstrapRuntimeChoices.addView(runtimeChoiceRow(RUNTIME_EXTENDED, "Extended Python Runtime", "LLVM, compilation tools, headers, sysroot.", "~135-138 MB", true));
         bootstrapRuntimeChoices.addView(runtimeChoiceRow(RUNTIME_MAX, "Max Runtime", "Full Linux runtime pack.", "coming soon", false));
         LinearLayout.LayoutParams choicesParams = new LinearLayout.LayoutParams(-1, -2);
         choicesParams.setMargins(0, dp(18), 0, 0);
@@ -400,7 +401,7 @@ public class MainActivity extends Activity {
             if (bootstrapRuntimeChoices != null) {
                 bootstrapRuntimeChoices.removeAllViews();
                 bootstrapRuntimeChoices.addView(runtimeChoiceRow(RUNTIME_BASIC, "Basic Python Runtime", "Coreutils, Python, pip. Small first install.", "16-17 MB", true));
-                bootstrapRuntimeChoices.addView(runtimeChoiceRow(RUNTIME_EXTENDED, "Extended Python Runtime", "LLVM, compilation tools, headers, sysroot.", "~373 MB", true));
+                bootstrapRuntimeChoices.addView(runtimeChoiceRow(RUNTIME_EXTENDED, "Extended Python Runtime", "LLVM, compilation tools, headers, sysroot.", "~135-138 MB", true));
                 bootstrapRuntimeChoices.addView(runtimeChoiceRow(RUNTIME_MAX, "Max Runtime", "Full Linux runtime pack.", "coming soon", false));
                 bootstrapRuntimeChoices.setVisibility(View.VISIBLE);
             }
@@ -1697,7 +1698,7 @@ public class MainActivity extends Activity {
             if (marker.isFile()) {
                 byte[] version = new byte[(int) marker.length()];
                 try (InputStream input = new FileInputStream(marker)) {
-                    if (input != null && input.read(version) == version.length
+                    if (input.read(version) == version.length
                             && runtimeAssetVersion().equals(new String(version, StandardCharsets.UTF_8))) {
                         return;
                     }
@@ -1725,8 +1726,9 @@ public class MainActivity extends Activity {
                 output.write(runtimeAssetVersion().getBytes(StandardCharsets.UTF_8));
             }
             payload.delete();
-        } catch (IOException ignored) {
-            appendBootstrapOutput("! runtime install failed: " + ignored.getMessage());
+        } catch (IOException e) {
+            appendBootstrapOutput("! runtime install failed: " + e.getMessage());
+            throw new IllegalStateException("runtime install failed", e);
         }
     }
 
@@ -1829,14 +1831,39 @@ public class MainActivity extends Activity {
         try (InputStream fileInput = new FileInputStream(archiveFile);
              InputStream zstd = new ZstdInputStream(fileInput)) {
             byte[] header = new byte[512];
+            String pendingLongName = null;
+            String pendingLongLink = null;
             while (readFullyOrEof(zstd, header)) {
                 if (isZeroBlock(header)) break;
                 String name = tarString(header, 0, 100);
                 String prefix = tarString(header, 345, 155);
                 if (!prefix.isEmpty()) name = prefix + "/" + name;
+                int mode = (int) tarOctal(header, 100, 8);
                 long size = tarOctal(header, 124, 12);
                 char type = (char) header[156];
                 String linkName = tarString(header, 157, 100);
+                if (type == 'L') {
+                    pendingLongName = readTarTextEntry(zstd, size);
+                    skipTarPadding(zstd, size);
+                    continue;
+                }
+                if (type == 'K') {
+                    pendingLongLink = readTarTextEntry(zstd, size);
+                    skipTarPadding(zstd, size);
+                    continue;
+                }
+                if (type == 'x' || type == 'g') {
+                    skipTarEntry(zstd, size);
+                    continue;
+                }
+                if (pendingLongName != null) {
+                    name = pendingLongName;
+                    pendingLongName = null;
+                }
+                if (pendingLongLink != null) {
+                    linkName = pendingLongLink;
+                    pendingLongLink = null;
+                }
                 File outputFile = new File(targetDir, name);
                 String outputPath = outputFile.getCanonicalPath();
                 if (!outputPath.startsWith(targetRoot)) {
@@ -1844,36 +1871,81 @@ public class MainActivity extends Activity {
                     continue;
                 }
 
-                if (type == '5') {
+                if (type == '5' || name.endsWith("/") || outputFile.isDirectory()) {
+                    if (outputFile.isFile()) outputFile.delete();
                     outputFile.mkdirs();
+                    applyTarMode(outputFile, mode);
                 } else if (type == '2') {
-                    File parent = outputFile.getParentFile();
-                    if (parent != null) parent.mkdirs();
+                    ensureParentDirectory(outputFile);
                     outputFile.delete();
                     try {
                         Os.symlink(linkName, outputFile.getAbsolutePath());
                     } catch (ErrnoException ignored) {
                     }
                 } else if (type == '1') {
-                    File parent = outputFile.getParentFile();
-                    if (parent != null) parent.mkdirs();
+                    ensureParentDirectory(outputFile);
                     File linkTarget = new File(targetDir, linkName);
                     outputFile.delete();
                     try {
                         Os.link(linkTarget.getAbsolutePath(), outputFile.getAbsolutePath());
                     } catch (ErrnoException ignored) {
-                        copyFile(linkTarget, outputFile);
+                        if (linkTarget.isFile()) {
+                            copyFile(linkTarget, outputFile);
+                        } else {
+                            try {
+                                Os.symlink(linkTarget.getAbsolutePath(), outputFile.getAbsolutePath());
+                            } catch (ErrnoException ignoredToo) {
+                            }
+                        }
                     }
+                    applyTarMode(outputFile, mode);
                 } else {
-                    File parent = outputFile.getParentFile();
-                    if (parent != null) parent.mkdirs();
+                    ensureParentDirectory(outputFile);
                     try (OutputStream output = new FileOutputStream(outputFile)) {
                         copyExact(zstd, output, size);
                     }
-                    outputFile.setReadable(true, false);
+                    applyTarMode(outputFile, mode);
                 }
                 skipTarPadding(zstd, size);
             }
+        }
+    }
+
+    private String readTarTextEntry(InputStream input, long size) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream((int) Math.min(size, 65536));
+        copyExact(input, output, size);
+        byte[] bytes = output.toByteArray();
+        int length = bytes.length;
+        while (length > 0 && bytes[length - 1] == 0) length--;
+        return new String(bytes, 0, length, StandardCharsets.UTF_8);
+    }
+
+    private void ensureParentDirectory(File file) throws IOException {
+        File parent = file.getParentFile();
+        if (parent == null) return;
+        if (parent.isFile() && !parent.delete()) {
+            throw new IOException("cannot replace file parent: " + parent.getAbsolutePath());
+        }
+        File grandparent = parent.getParentFile();
+        if (grandparent != null && grandparent.isFile() && !grandparent.delete()) {
+            throw new IOException("cannot replace file parent: " + grandparent.getAbsolutePath());
+        }
+        if (!parent.isDirectory() && !parent.mkdirs() && !parent.isDirectory()) {
+            throw new IOException("cannot create parent directory: " + parent.getAbsolutePath());
+        }
+    }
+
+    private void applyTarMode(File file, int mode) {
+        int safeMode = mode == 0 ? 0644 : mode & 0777;
+        if (file.isDirectory() && (safeMode & 0111) == 0) {
+            safeMode |= 0111;
+        }
+        try {
+            Os.chmod(file.getAbsolutePath(), safeMode);
+        } catch (ErrnoException ignored) {
+            file.setReadable((safeMode & 0444) != 0, false);
+            file.setWritable((safeMode & 0222) != 0, false);
+            file.setExecutable((safeMode & 0111) != 0, false);
         }
     }
 
