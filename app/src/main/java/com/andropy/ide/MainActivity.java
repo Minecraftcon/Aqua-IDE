@@ -33,6 +33,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
+import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -44,21 +45,29 @@ import com.termux.terminal.TerminalSessionClient;
 import com.termux.view.TerminalViewClient;
 
 import java.io.BufferedWriter;
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.Random;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+
+import org.json.JSONObject;
 
 public class MainActivity extends Activity {
     private static final String PREFS = "andropy_editor";
@@ -130,8 +139,14 @@ public class MainActivity extends Activity {
     private ScrollView bootstrapOutputScroll;
     private TextView bootstrapStageText;
     private TextView bootstrapOutputText;
+    private TextView pipStatusText;
+    private TextView pipOutputText;
+    private LinearLayout pipPackageList;
+    private EditText pipInput;
+    private Button pipInstallButton;
     private View bootstrapProgressFill;
     private final StringBuilder bootstrapOutput = new StringBuilder();
+    private final StringBuilder pipOutput = new StringBuilder();
     private File prefixRoot;
     private File prefixRealRoot;
     private File homeRoot;
@@ -624,9 +639,369 @@ public class MainActivity extends Activity {
 
     private void showPip() {
         prefs.edit().putString("code", editor == null ? "" : editor.getText().toString()).apply();
-        terminalStartupCommand = "pip --version; pip --help; exec bash --rcfile \"$HOME/.bashrc\" -i";
-        setContentView(buildTerminalScreen());
-        termuxTerminalView.requestFocus();
+        setContentView(buildPipScreen());
+        refreshPipPackages();
+    }
+
+    private View buildPipScreen() {
+        terminalVisible = false;
+        stopTerminal();
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(Color.rgb(31, 35, 41));
+
+        LinearLayout topBar = new LinearLayout(this);
+        topBar.setOrientation(LinearLayout.HORIZONTAL);
+        topBar.setGravity(Gravity.CENTER_VERTICAL);
+        topBar.setPadding(dp(10), 0, dp(12), 0);
+        topBar.setBackgroundColor(BAR);
+
+        ImageButton back = new ImageButton(this);
+        back.setImageResource(getResources().getIdentifier("ic_menu_24", "drawable", getPackageName()));
+        back.setColorFilter(MUTED);
+        back.setBackgroundColor(BAR);
+        back.setContentDescription("Editor");
+        back.setPadding(dp(7), dp(7), dp(7), dp(7));
+        back.setOnClickListener(v -> showEditor());
+        topBar.addView(back, new LinearLayout.LayoutParams(dp(34), dp(34)));
+
+        TextView title = new TextView(this);
+        title.setText("Pip");
+        title.setTextColor(TEXT);
+        title.setTextSize(15);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        title.setPadding(dp(12), 0, 0, 0);
+        topBar.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
+        root.addView(topBar, new LinearLayout.LayoutParams(-1, dp(48)));
+
+        View yellowDivider = new View(this);
+        yellowDivider.setBackgroundColor(YELLOW_DIVIDER);
+        root.addView(yellowDivider, new LinearLayout.LayoutParams(-1, dp(2)));
+
+        LinearLayout installPanel = new LinearLayout(this);
+        installPanel.setOrientation(LinearLayout.VERTICAL);
+        installPanel.setPadding(dp(12), dp(10), dp(12), dp(10));
+        installPanel.setBackgroundColor(Color.rgb(39, 44, 52));
+
+        LinearLayout inputRow = new LinearLayout(this);
+        inputRow.setOrientation(LinearLayout.HORIZONTAL);
+        inputRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        pipInput = new EditText(this);
+        pipInput.setSingleLine(true);
+        pipInput.setTextColor(TEXT);
+        pipInput.setHintTextColor(Color.rgb(148, 158, 172));
+        pipInput.setTextSize(14);
+        pipInput.setHint("package name");
+        pipInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        pipInput.setPadding(dp(12), 0, dp(12), 0);
+        pipInput.setBackground(rounded(Color.rgb(28, 32, 38), Color.rgb(82, 92, 106), 1, 7));
+        inputRow.addView(pipInput, new LinearLayout.LayoutParams(0, dp(42), 1));
+
+        pipInstallButton = new Button(this);
+        pipInstallButton.setText("Install");
+        pipInstallButton.setTextSize(13);
+        pipInstallButton.setAllCaps(false);
+        pipInstallButton.setTextColor(Color.rgb(14, 19, 24));
+        pipInstallButton.setBackground(rounded(ACCENT, ACCENT, 0, 7));
+        pipInstallButton.setOnClickListener(v -> installPipPackage());
+        LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(dp(86), dp(42));
+        buttonParams.setMarginStart(dp(8));
+        inputRow.addView(pipInstallButton, buttonParams);
+        installPanel.addView(inputRow, new LinearLayout.LayoutParams(-1, dp(42)));
+
+        pipStatusText = new TextView(this);
+        pipStatusText.setText("Ready");
+        pipStatusText.setTextColor(MUTED);
+        pipStatusText.setTextSize(12);
+        pipStatusText.setSingleLine(true);
+        pipStatusText.setGravity(Gravity.CENTER_VERTICAL);
+        installPanel.addView(pipStatusText, new LinearLayout.LayoutParams(-1, dp(28)));
+
+        pipOutputText = new TextView(this);
+        pipOutputText.setTextColor(Color.rgb(210, 218, 228));
+        pipOutputText.setTextSize(11);
+        pipOutputText.setTypeface(Typeface.MONOSPACE);
+        pipOutputText.setGravity(Gravity.BOTTOM | Gravity.START);
+        pipOutputText.setPadding(dp(10), dp(6), dp(10), dp(6));
+        pipOutputText.setBackground(rounded(Color.rgb(19, 22, 27), Color.rgb(49, 56, 66), 1, 6));
+        installPanel.addView(pipOutputText, new LinearLayout.LayoutParams(-1, dp(94)));
+        root.addView(installPanel, new LinearLayout.LayoutParams(-1, dp(184)));
+
+        TextView installedLabel = new TextView(this);
+        installedLabel.setText("Installed modules");
+        installedLabel.setTextColor(TEXT);
+        installedLabel.setTextSize(13);
+        installedLabel.setTypeface(Typeface.DEFAULT_BOLD);
+        installedLabel.setGravity(Gravity.CENTER_VERTICAL);
+        installedLabel.setPadding(dp(12), 0, dp(12), 0);
+        root.addView(installedLabel, new LinearLayout.LayoutParams(-1, dp(38)));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        pipPackageList = new LinearLayout(this);
+        pipPackageList.setOrientation(LinearLayout.VERTICAL);
+        pipPackageList.setPadding(dp(10), 0, dp(10), dp(12));
+        scroll.addView(pipPackageList, new ScrollView.LayoutParams(-1, -2));
+        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        return root;
+    }
+
+    private void installPipPackage() {
+        String spec = pipInput == null ? "" : pipInput.getText().toString().trim();
+        if (spec.isEmpty()) {
+            Toast.makeText(this, "Package name required", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (pipInstallButton != null) pipInstallButton.setEnabled(false);
+        if (pipStatusText != null) pipStatusText.setText("Installing " + spec);
+        synchronized (pipOutput) {
+            pipOutput.setLength(0);
+        }
+        appendPipOutput("$ pip install " + spec);
+
+        new Thread(() -> {
+            int exitCode = runPipInstall(spec);
+            runOnUiThread(() -> {
+                if (pipInstallButton != null) pipInstallButton.setEnabled(true);
+                if (pipStatusText != null) {
+                    pipStatusText.setText(exitCode == 0 ? "Installed " + spec : "Install failed: exit " + exitCode);
+                }
+                refreshPipPackages();
+            });
+        }, "andropy-pip-install").start();
+    }
+
+    private int runPipInstall(String spec) {
+        ensureProjectRoots();
+        List<String> command = new ArrayList<>();
+        command.add(new File(binRoot, "python").getAbsolutePath());
+        command.add("-m");
+        command.add("pip");
+        command.add("install");
+        command.add("--disable-pip-version-check");
+        command.add("--no-cache-dir");
+        for (String part : spec.split("\\s+")) {
+            if (!part.isEmpty()) command.add(part);
+        }
+        ProcessBuilder builder = new ProcessBuilder(command);
+        builder.redirectErrorStream(true);
+        applyRuntimeEnvironment(builder);
+        try {
+            Process process = builder.start();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) appendPipOutput(line);
+            }
+            int exitCode = process.waitFor();
+            appendPipOutput("[pip exit " + exitCode + "]");
+            return exitCode;
+        } catch (IOException | InterruptedException error) {
+            appendPipOutput(error.getClass().getSimpleName() + ": " + error.getMessage());
+            if (error instanceof InterruptedException) Thread.currentThread().interrupt();
+            return 1;
+        }
+    }
+
+    private void refreshPipPackages() {
+        if (pipPackageList == null) return;
+        pipPackageList.removeAllViews();
+        pipPackageList.addView(packageMessage("Scanning installed modules..."));
+        if (pipStatusText != null && pipStatusText.getText().toString().equals("Ready")) {
+            pipStatusText.setText("Scanning installed modules");
+        }
+        new Thread(() -> {
+            List<PipPackageInfo> packages = loadInstalledPipPackages();
+            runOnUiThread(() -> renderPipPackages(packages));
+        }, "andropy-pip-list").start();
+    }
+
+    private List<PipPackageInfo> loadInstalledPipPackages() {
+        ensureProjectRoots();
+        List<PipPackageInfo> packages = new ArrayList<>();
+        String script = ""
+                + "import importlib.metadata as md, os\n"
+                + "def clean(value):\n"
+                + "    return (value or '').replace('\\t', ' ').replace('\\n', ' ').strip()\n"
+                + "for dist in sorted(md.distributions(), key=lambda d: (d.metadata.get('Name') or '').lower()):\n"
+                + "    name = clean(dist.metadata.get('Name'))\n"
+                + "    if not name:\n"
+                + "        continue\n"
+                + "    version = clean(dist.version)\n"
+                + "    summary = clean(dist.metadata.get('Summary'))\n"
+                + "    size = 0\n"
+                + "    for item in (dist.files or []):\n"
+                + "        try:\n"
+                + "            path = dist.locate_file(item)\n"
+                + "            if os.path.isfile(path):\n"
+                + "                size += os.path.getsize(path)\n"
+                + "        except Exception:\n"
+                + "            pass\n"
+                + "    print(f'{name}\\t{version}\\t{size}\\t{summary}', flush=True)\n";
+        ProcessBuilder builder = new ProcessBuilder(new File(binRoot, "python").getAbsolutePath(), "-c", script);
+        builder.redirectErrorStream(true);
+        applyRuntimeEnvironment(builder);
+        try {
+            Process process = builder.start();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String[] parts = line.split("\\t", 4);
+                    if (parts.length >= 3) {
+                        long size = 0;
+                        try {
+                            size = Long.parseLong(parts[2]);
+                        } catch (NumberFormatException ignored) {
+                        }
+                        String summary = parts.length == 4 ? parts[3] : "";
+                        packages.add(new PipPackageInfo(parts[0], parts[1], size, summary));
+                    }
+                }
+            }
+            process.waitFor();
+        } catch (IOException | InterruptedException ignored) {
+            if (ignored instanceof InterruptedException) Thread.currentThread().interrupt();
+        }
+        for (PipPackageInfo item : packages) {
+            String remoteSummary = fetchPyPiSummary(item.name);
+            if (!remoteSummary.isEmpty()) item.summary = remoteSummary;
+        }
+        return packages;
+    }
+
+    private void renderPipPackages(List<PipPackageInfo> packages) {
+        if (pipPackageList == null) return;
+        pipPackageList.removeAllViews();
+        if (packages.isEmpty()) {
+            pipPackageList.addView(packageMessage("No pip modules installed"));
+        } else {
+            for (PipPackageInfo item : packages) {
+                pipPackageList.addView(packageRow(item));
+            }
+        }
+        if (pipStatusText != null && !pipStatusText.getText().toString().startsWith("Install failed")) {
+            pipStatusText.setText(packages.size() + " installed module" + (packages.size() == 1 ? "" : "s"));
+        }
+    }
+
+    private View packageMessage(String message) {
+        TextView text = new TextView(this);
+        text.setText(message);
+        text.setTextColor(MUTED);
+        text.setTextSize(13);
+        text.setGravity(Gravity.CENTER);
+        text.setPadding(dp(12), dp(28), dp(12), dp(28));
+        return text;
+    }
+
+    private View packageRow(PipPackageInfo item) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(dp(12), dp(10), dp(12), dp(10));
+        row.setBackground(rounded(Color.rgb(42, 47, 55), Color.rgb(64, 72, 84), 1, 8));
+
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView name = new TextView(this);
+        name.setText(item.name + "  " + item.version);
+        name.setTextColor(TEXT);
+        name.setTextSize(14);
+        name.setTypeface(Typeface.DEFAULT_BOLD);
+        name.setSingleLine(true);
+        titleRow.addView(name, new LinearLayout.LayoutParams(0, dp(24), 1));
+
+        TextView size = new TextView(this);
+        size.setText(formatBytes(item.sizeBytes));
+        size.setTextColor(Color.rgb(255, 220, 105));
+        size.setTextSize(12);
+        size.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        size.setSingleLine(true);
+        titleRow.addView(size, new LinearLayout.LayoutParams(dp(86), dp(24)));
+        row.addView(titleRow, new LinearLayout.LayoutParams(-1, dp(24)));
+
+        TextView summary = new TextView(this);
+        summary.setText(item.summary == null || item.summary.isEmpty() ? "No PyPI description available" : item.summary);
+        summary.setTextColor(MUTED);
+        summary.setTextSize(12);
+        summary.setMaxLines(3);
+        summary.setPadding(0, dp(4), 0, 0);
+        row.addView(summary, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.setMargins(0, 0, 0, dp(8));
+        row.setLayoutParams(params);
+        return row;
+    }
+
+    private String fetchPyPiSummary(String packageName) {
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL("https://pypi.org/pypi/" + packageName + "/json");
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(5000);
+            connection.setReadTimeout(5000);
+            connection.setRequestProperty("Accept", "application/json");
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()))) {
+                StringBuilder body = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) body.append(line);
+                return new JSONObject(body.toString()).getJSONObject("info").optString("summary", "").trim();
+            }
+        } catch (Exception ignored) {
+            return "";
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
+    private void appendPipOutput(String line) {
+        runOnUiThread(() -> {
+            synchronized (pipOutput) {
+                if (pipOutput.length() > 0) pipOutput.append('\n');
+                pipOutput.append(line);
+                String[] lines = pipOutput.toString().split("\\n");
+                int start = Math.max(0, lines.length - 6);
+                StringBuilder visible = new StringBuilder();
+                for (int i = start; i < lines.length; i++) {
+                    if (visible.length() > 0) visible.append('\n');
+                    visible.append(lines[i]);
+                }
+                if (pipOutputText != null) pipOutputText.setText(visible.toString());
+            }
+        });
+    }
+
+    private void applyRuntimeEnvironment(ProcessBuilder builder) {
+        String libPath = getApplicationInfo().nativeLibraryDir + ":" + libRoot.getAbsolutePath();
+        builder.environment().put("PREFIX", prefixRoot.getAbsolutePath());
+        builder.environment().put("HOME", homeRoot.getAbsolutePath());
+        builder.environment().put("PATH", binRoot.getAbsolutePath() + ":/system/bin:/system/xbin");
+        builder.environment().put("LD_LIBRARY_PATH", libPath);
+        builder.environment().put("TMPDIR", tmpRoot.getAbsolutePath());
+        builder.environment().put("TERM", "xterm-256color");
+        builder.environment().put("COLORTERM", "truecolor");
+        builder.environment().put("PIP_DISABLE_PIP_VERSION_CHECK", "1");
+    }
+
+    private GradientDrawable rounded(int fill, int stroke, int strokeDp, int radiusDp) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(fill);
+        drawable.setCornerRadius(dp(radiusDp));
+        if (strokeDp > 0) drawable.setStroke(dp(strokeDp), stroke);
+        return drawable;
+    }
+
+    private String formatBytes(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        float kb = bytes / 1024f;
+        if (kb < 1024) return String.format(Locale.US, "%.1f KB", kb);
+        float mb = kb / 1024f;
+        if (mb < 1024) return String.format(Locale.US, "%.1f MB", mb);
+        return String.format(Locale.US, "%.1f GB", mb / 1024f);
     }
 
     private void showEditor() {
@@ -1556,6 +1931,20 @@ public class MainActivity extends Activity {
 
     private int panelWidth() {
         return dp(PANEL_WIDTH_DP);
+    }
+
+    private static final class PipPackageInfo {
+        final String name;
+        final String version;
+        final long sizeBytes;
+        String summary;
+
+        PipPackageInfo(String name, String version, long sizeBytes, String summary) {
+            this.name = name;
+            this.version = version == null ? "" : version;
+            this.sizeBytes = sizeBytes;
+            this.summary = summary == null ? "" : summary;
+        }
     }
 
     private final class BootstrapOrbView extends View {
