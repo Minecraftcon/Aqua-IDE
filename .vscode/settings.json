@@ -1,0 +1,41 @@
+{
+  "files.watcherExclude": {
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/.gradle/**": true,
+    "**/.mdfollower/**": true,
+    "**/app/.cxx/**": true,
+    "**/app/build/**": true,
+    "**/app/src/main/assets/runtime-arm64-v8a/**": true,
+    "**/app/src/main/assets/runtime-x86_64/**": true,
+    "**/app/src/main/jniLibs/**": true,
+    "**/build/**": true,
+    "**/comiled-bianaries/build/**": true,
+    "**/comiled-bianaries/out/**": true,
+    "**/comiled-bianaries/repo-cache/**": true,
+    "**/comiled-bianaries/src/**": true,
+    "**/comiled-bianaries/stage/**": true,
+    "**/comiled-bianaries/termux-debs/**": true,
+    "**/comiled-bianaries/termux-extract/**": true,
+    "**/comiled-bianaries/termux-packages/**": true,
+    "**/comiled-bianaries/termux-userland/**": true
+  },
+  "search.exclude": {
+    "**/.gradle/**": true,
+    "**/.mdfollower/**": true,
+    "**/app/.cxx/**": true,
+    "**/app/build/**": true,
+    "**/app/src/main/assets/runtime-arm64-v8a/**": true,
+    "**/app/src/main/assets/runtime-x86_64/**": true,
+    "**/app/src/main/jniLibs/**": true,
+    "**/comiled-bianaries/build/**": true,
+    "**/comiled-bianaries/out/**": true,
+    "**/comiled-bianaries/repo-cache/**": true,
+    "**/comiled-bianaries/src/**": true,
+    "**/comiled-bianaries/stage/**": true,
+    "**/comiled-bianaries/termux-debs/**": true,
+    "**/comiled-bianaries/termux-extract/**": true,
+    "**/comiled-bianaries/termux-packages/**": true,
+    "**/comiled-bianaries/termux-userland/**": true
+  }
+}
