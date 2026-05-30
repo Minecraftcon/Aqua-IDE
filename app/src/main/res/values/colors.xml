@@ -1,0 +1,11 @@
+<resources>
+    <color name="andropy_bg">#111419</color>
+    <color name="andropy_surface">#1B2028</color>
+    <color name="andropy_surface_2">#232A33</color>
+    <color name="andropy_text">#F3F6FA</color>
+    <color name="andropy_muted">#A7B0BC</color>
+    <color name="andropy_green">#4DD681</color>
+    <color name="andropy_blue">#61A7FF</color>
+    <color name="andropy_red">#FF5D73</color>
+    <color name="andropy_yellow">#FFD166</color>
+</resources>

@@ -1,0 +1,21 @@
+--- a/src/nano.c
++++ b/src/nano.c
+@@ -1868,11 +1868,18 @@ int main(int argc, char **argv)
+ #endif
+ 
+ #ifdef ENABLE_UTF8
++#ifdef __ANDROID__
++	/* Android app sandboxes do not provide a normal libc locale database.
++	 * Treat the app terminal as UTF-8 and avoid Bionic locale probes that can
++	 * crash before nano reaches option parsing. */
++	using_utf8 = TRUE;
++#else
+ 	/* If setting the locale is successful and it uses UTF-8, we will
+ 	 * need to use the multibyte functions for text processing. */
+ 	if (setlocale(LC_ALL, "") && strcmp(nl_langinfo(CODESET), "UTF-8") == 0)
+ 		using_utf8 = TRUE;
++#endif
+ #else
+ 	setlocale(LC_ALL, "");
+ #endif
+ 

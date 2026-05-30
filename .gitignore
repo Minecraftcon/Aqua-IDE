@@ -1,0 +1,32 @@
+# Local Android/Gradle state
+.gradle/
+app/.cxx/
+app/build/
+build/
+*.apk
+*.aab
+local.properties
+
+# Emulator/debug artifacts
+.mdfollower/
+*.hprof
+
+# Generated native/runtime payloads kept off GitHub for now
+app/src/main/assets/runtime-x86_64/
+app/src/main/assets/runtime-arm64-v8a/
+app/src/main/jniLibs/
+
+# Cross-compile downloads, caches, extracted userlands, and build products
+comiled-bianaries/build/
+comiled-bianaries/out/
+comiled-bianaries/stage/
+comiled-bianaries/src/
+comiled-bianaries/repo-cache/
+comiled-bianaries/termux-debs/
+comiled-bianaries/termux-extract/
+comiled-bianaries/termux-packages/
+comiled-bianaries/termux-userland/
+
+# Host-only notes
+PROJECT_LOG.md
+SYSTEM_SWAP_README.md
