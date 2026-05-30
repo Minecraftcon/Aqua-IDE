@@ -34,6 +34,13 @@ if [[ ! -d "$NDK" ]]; then
   scripts/setup-android-sdk.sh
 fi
 
+host_app_package="${ANDROPY_APP_PACKAGE:-com.andropy.ide}"
+host_app_data="/data/data/$host_app_package"
+if [[ ! -w "$host_app_data" ]]; then
+  sudo mkdir -p "$host_app_data/files/home" "$host_app_data/files/usr"
+  sudo chown -R "$USER" "$host_app_data"
+fi
+
 read -r -a requested_packages <<< "$AQUA_APT_PACKAGES"
 package_dirs="$(jq --raw-output 'del(.pkg_format) | keys | .[]' repo.json)"
 packages=()
