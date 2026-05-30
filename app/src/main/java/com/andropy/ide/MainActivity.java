@@ -12,6 +12,7 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Build;
+import android.os.StatFs;
 import android.os.SystemClock;
 import android.system.ErrnoException;
 import android.system.Os;
@@ -61,6 +62,8 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
@@ -188,6 +191,9 @@ public class MainActivity extends Activity {
     private boolean applyingHelperEdit;
     private boolean panelOpen;
     private boolean terminalVisible;
+    private boolean fileManagerVisible;
+    private File fileManagerCurrentDir;
+    private String fileManagerCurrentTitle;
     private boolean bootstrapShowingOutput;
     private boolean bootstrapDownloading;
     private String terminalStartupCommand;
@@ -494,6 +500,17 @@ public class MainActivity extends Activity {
         fileName.setGravity(Gravity.CENTER_VERTICAL);
         topBar.addView(fileName, new LinearLayout.LayoutParams(0, dp(48), 1));
 
+        ImageButton files = new ImageButton(this);
+        files.setImageResource(getResources().getIdentifier("ic_folder_open_24", "drawable", getPackageName()));
+        files.setColorFilter(MUTED);
+        files.setBackgroundColor(BAR);
+        files.setContentDescription("Files");
+        files.setPadding(dp(7), dp(7), dp(7), dp(7));
+        files.setOnClickListener(v -> showFileManagerRoot());
+        LinearLayout.LayoutParams filesParams = new LinearLayout.LayoutParams(dp(34), dp(34));
+        filesParams.setMarginEnd(dp(8));
+        topBar.addView(files, filesParams);
+
         ImageButton run = new ImageButton(this);
         run.setImageResource(getResources().getIdentifier("ic_play_arrow_24", "drawable", getPackageName()));
         run.setColorFilter(ACCENT);
@@ -538,6 +555,7 @@ public class MainActivity extends Activity {
             @Override
             public void onTextChanged(CharSequence s, int start, int before, int count) {
                 prefs.edit().putString("code", s.toString()).apply();
+                saveOpenedFileQuietly(s.toString());
             }
 
             @Override
@@ -565,6 +583,207 @@ public class MainActivity extends Activity {
         shell.addView(sidePanel, panelParams);
 
         return shell;
+    }
+
+    private View buildFileRootScreen() {
+        fileManagerVisible = true;
+        fileManagerCurrentDir = null;
+        fileManagerCurrentTitle = "Directory";
+
+        LinearLayout root = fileManagerBase("Directory", v -> showEditor());
+        LinearLayout content = fileManagerContent(root);
+        File sdcard = new File("/sdcard");
+
+        content.addView(fileLocationRow(
+                "Internal storage",
+                sdcard.getAbsolutePath(),
+                usedOfTotal(sdcard),
+                "ic_storage_24",
+                v -> showDirectory(sdcard, "Internal storage")));
+
+        content.addView(fileLocationRow(
+                "app_home",
+                homeRoot.getAbsolutePath(),
+                "Used " + formatBytes(directorySize(homeRoot, 20000)) + " of " + formatBytes(storageTotal(homeRoot)),
+                "ic_folder_24",
+                v -> showDirectory(homeRoot, "app_home")));
+
+        return root;
+    }
+
+    private View buildDirectoryScreen(File directory, String title) {
+        fileManagerVisible = true;
+        fileManagerCurrentDir = directory;
+        fileManagerCurrentTitle = title;
+
+        LinearLayout root = fileManagerBase(title, v -> {
+            if (directory.equals(new File("/sdcard")) || directory.equals(homeRoot)) {
+                showFileManagerRoot();
+            } else {
+                File parent = directory.getParentFile();
+                showDirectory(parent == null ? homeRoot : parent, parent == null ? "Directory" : parent.getName());
+            }
+        });
+        LinearLayout content = fileManagerContent(root);
+
+        File parent = directory.getParentFile();
+        if (parent != null && !directory.equals(new File("/sdcard")) && !directory.equals(homeRoot)) {
+            content.addView(fileEntryRow(parent, "..", "Folder", true));
+        }
+
+        File[] children = directory.listFiles();
+        if (children == null) {
+            TextView empty = new TextView(this);
+            empty.setText("No access");
+            empty.setTextColor(MUTED);
+            empty.setTextSize(14);
+            empty.setPadding(dp(22), dp(24), dp(22), 0);
+            content.addView(empty, new LinearLayout.LayoutParams(-1, -2));
+            return root;
+        }
+
+        Arrays.sort(children, Comparator
+                .comparing((File file) -> !file.isDirectory())
+                .thenComparing(file -> file.getName().toLowerCase(Locale.US)));
+        for (File child : children) {
+            if (child.isHidden() && child.getName().startsWith(".")) continue;
+            content.addView(fileEntryRow(child, child.getName(), child.isDirectory() ? "Folder" : formatBytes(child.length()), child.isDirectory()));
+        }
+        return root;
+    }
+
+    private LinearLayout fileManagerBase(String title, View.OnClickListener backClick) {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(PANEL_BG);
+
+        LinearLayout topBar = new LinearLayout(this);
+        topBar.setOrientation(LinearLayout.HORIZONTAL);
+        topBar.setGravity(Gravity.CENTER_VERTICAL);
+        topBar.setPadding(dp(12), 0, dp(12), 0);
+        topBar.setBackgroundColor(PANEL_HEADER);
+
+        ImageButton back = new ImageButton(this);
+        back.setImageResource(getResources().getIdentifier("ic_arrow_back_24", "drawable", getPackageName()));
+        back.setColorFilter(TEXT);
+        back.setBackgroundColor(PANEL_HEADER);
+        back.setPadding(dp(7), dp(7), dp(7), dp(7));
+        back.setOnClickListener(backClick);
+        topBar.addView(back, new LinearLayout.LayoutParams(dp(40), dp(40)));
+
+        TextView titleView = new TextView(this);
+        titleView.setText(title);
+        titleView.setTextColor(TEXT);
+        titleView.setTextSize(18);
+        titleView.setTypeface(Typeface.DEFAULT_BOLD);
+        titleView.setSingleLine(true);
+        titleView.setGravity(Gravity.CENTER_VERTICAL);
+        titleView.setPadding(dp(14), 0, 0, 0);
+        topBar.addView(titleView, new LinearLayout.LayoutParams(0, dp(54), 1));
+        root.addView(topBar, new LinearLayout.LayoutParams(-1, dp(54)));
+        return root;
+    }
+
+    private LinearLayout fileManagerContent(LinearLayout root) {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(0, dp(18), 0, dp(28));
+        scroll.addView(content, new ScrollView.LayoutParams(-1, -2));
+        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        return content;
+    }
+
+    private View fileLocationRow(String title, String path, String detail, String iconName, View.OnClickListener click) {
+        LinearLayout row = managerRowBase(click);
+        row.addView(fileIcon(iconName), new LinearLayout.LayoutParams(dp(54), dp(54)));
+        row.addView(fileTextBlock(title, path, detail), new LinearLayout.LayoutParams(0, -2, 1));
+        return row;
+    }
+
+    private View fileEntryRow(File file, String name, String detail, boolean folder) {
+        LinearLayout row = managerRowBase(v -> {
+            if (file.isDirectory()) showDirectory(file, name);
+            else openFileInEditor(file);
+        });
+        row.addView(fileIcon(folder ? "ic_folder_24" : "ic_file_24"), new LinearLayout.LayoutParams(dp(54), dp(54)));
+        row.addView(fileTextBlock(name, detail, null), new LinearLayout.LayoutParams(0, -2, 1));
+        return row;
+    }
+
+    private LinearLayout managerRowBase(View.OnClickListener click) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(22), dp(8), dp(18), dp(8));
+        row.setMinimumHeight(dp(76));
+        row.setOnClickListener(click);
+        row.setBackgroundColor(PANEL_BG);
+        return row;
+    }
+
+    private ImageView fileIcon(String name) {
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(getResources().getIdentifier(name, "drawable", getPackageName()));
+        icon.setColorFilter(PANEL_ICON);
+        icon.setPadding(0, dp(6), dp(18), dp(6));
+        return icon;
+    }
+
+    private LinearLayout fileTextBlock(String title, String subtitle, String detail) {
+        LinearLayout text = new LinearLayout(this);
+        text.setOrientation(LinearLayout.VERTICAL);
+
+        TextView titleView = new TextView(this);
+        titleView.setText(title);
+        titleView.setTextColor(TEXT);
+        titleView.setTextSize(16);
+        titleView.setSingleLine(true);
+        text.addView(titleView, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView subtitleView = new TextView(this);
+        subtitleView.setText(subtitle == null ? "" : subtitle);
+        subtitleView.setTextColor(MUTED);
+        subtitleView.setTextSize(12);
+        subtitleView.setSingleLine(true);
+        text.addView(subtitleView, new LinearLayout.LayoutParams(-1, -2));
+
+        if (detail != null) {
+            TextView detailView = new TextView(this);
+            detailView.setText(detail);
+            detailView.setTextColor(Color.rgb(178, 184, 194));
+            detailView.setTextSize(12);
+            detailView.setSingleLine(true);
+            text.addView(detailView, new LinearLayout.LayoutParams(-1, -2));
+        }
+        return text;
+    }
+
+    private void showFileManagerRoot() {
+        hideKeyboard();
+        saveEditorState();
+        setContentView(buildFileRootScreen());
+    }
+
+    private void showDirectory(File directory, String title) {
+        hideKeyboard();
+        setContentView(buildDirectoryScreen(directory, title == null || title.isEmpty() ? directory.getName() : title));
+    }
+
+    private void openFileInEditor(File file) {
+        try {
+            byte[] data = readFileBytes(file, 1024 * 1024);
+            String code = new String(data, StandardCharsets.UTF_8);
+            prefs.edit()
+                    .putString("code", code)
+                    .putString("file_name", file.getName())
+                    .putString("file_path", file.getAbsolutePath())
+                    .apply();
+            showEditor();
+        } catch (IOException e) {
+            Toast.makeText(this, "Cannot open file", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private LinearLayout buildSidePanel() {
@@ -1147,8 +1366,81 @@ public class MainActivity extends Activity {
         return String.format(Locale.US, "%.1f GB", mb / 1024f);
     }
 
+    private String usedOfTotal(File path) {
+        long total = storageTotal(path);
+        long available = storageAvailable(path);
+        long used = Math.max(0, total - available);
+        return "Used " + formatBytes(used) + " of " + formatBytes(total);
+    }
+
+    private long storageTotal(File path) {
+        try {
+            StatFs stat = new StatFs(path.getAbsolutePath());
+            return stat.getTotalBytes();
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private long storageAvailable(File path) {
+        try {
+            StatFs stat = new StatFs(path.getAbsolutePath());
+            return stat.getAvailableBytes();
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private long directorySize(File root, int maxFiles) {
+        if (root == null || !root.exists()) return 0;
+        long total = 0;
+        int seen = 0;
+        ArrayList<File> stack = new ArrayList<>();
+        stack.add(root);
+        while (!stack.isEmpty() && seen < maxFiles) {
+            File file = stack.remove(stack.size() - 1);
+            seen++;
+            if (file.isFile()) {
+                total += Math.max(0, file.length());
+            } else {
+                File[] children = file.listFiles();
+                if (children != null) stack.addAll(Arrays.asList(children));
+            }
+        }
+        return total;
+    }
+
+    private byte[] readFileBytes(File file, int maxBytes) throws IOException {
+        long length = file.length();
+        if (length > maxBytes) throw new IOException("file too large");
+        ByteArrayOutputStream output = new ByteArrayOutputStream((int) Math.max(0, length));
+        try (InputStream input = new FileInputStream(file)) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
+        }
+        return output.toByteArray();
+    }
+
+    private void saveEditorState() {
+        if (editor == null) return;
+        String code = editor.getText().toString();
+        prefs.edit().putString("code", code).apply();
+        saveOpenedFileQuietly(code);
+    }
+
+    private void saveOpenedFileQuietly(String code) {
+        String path = prefs.getString("file_path", "");
+        if (path == null || path.isEmpty()) return;
+        try (FileOutputStream output = new FileOutputStream(new File(path))) {
+            output.write(code.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException ignored) {
+        }
+    }
+
     private void showEditor() {
         terminalVisible = false;
+        fileManagerVisible = false;
         terminalReturnToEditorOnExit = false;
         stopTerminal();
         setContentView(buildEditorScreen());
@@ -2166,7 +2458,8 @@ public class MainActivity extends Activity {
         hideKeyboard();
         String timestamp = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date());
         String code = editor.getText().toString();
-        File script = new File(homeRoot, currentFileName());
+        String openedPath = prefs.getString("file_path", "");
+        File script = openedPath == null || openedPath.isEmpty() ? new File(homeRoot, currentFileName()) : new File(openedPath);
         writeText(script, code);
         File runner = new File(homeRoot, ".andropy-run-current.sh");
         writeText(runner, "#!/system/bin/sh\n"
@@ -2194,6 +2487,20 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (fileManagerVisible) {
+            if (fileManagerCurrentDir != null) {
+                File sdcard = new File("/sdcard");
+                if (fileManagerCurrentDir.equals(sdcard) || fileManagerCurrentDir.equals(homeRoot)) {
+                    showFileManagerRoot();
+                } else {
+                    File parent = fileManagerCurrentDir.getParentFile();
+                    showDirectory(parent == null ? homeRoot : parent, parent == null ? "Directory" : parent.getName());
+                }
+            } else {
+                showEditor();
+            }
+            return;
+        }
         if (terminalVisible) {
             showEditor();
             return;
@@ -2360,6 +2667,11 @@ public class MainActivity extends Activity {
     }
 
     private String currentFileName() {
+        String path = prefs.getString("file_path", "");
+        if (path != null && !path.trim().isEmpty()) {
+            String nameFromPath = new File(path).getName();
+            if (!nameFromPath.trim().isEmpty()) return nameFromPath;
+        }
         String name = prefs.getString("file_name", DEFAULT_FILE);
         if (name == null || name.trim().isEmpty()) return DEFAULT_FILE;
         return name.trim();
