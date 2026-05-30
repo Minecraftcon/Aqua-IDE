@@ -34,6 +34,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -52,6 +53,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -73,7 +75,17 @@ public class MainActivity extends Activity {
     private static final String PREFS = "andropy_editor";
     private static final String DEFAULT_FILE = "new.py";
     private static final String PREFIX_DIR = "usr";
-    private static final String RUNTIME_ASSET_VERSION = "andropy-real-userland-6";
+    private static final String RUNTIME_BASIC_VERSION = "andropy-basic-runtime-8";
+    private static final String RUNTIME_EXTENDED_VERSION = "andropy-extended-runtime-7";
+    private static final String RUNTIME_BASIC_RELEASE_BASE = "https://github.com/Minecraftcon/Aqua-IDE/releases/download/runtime-v8/";
+    private static final String RUNTIME_EXTENDED_RELEASE_BASE = "https://github.com/Minecraftcon/Aqua-IDE/releases/download/runtime-v7/";
+    private static final String RUNTIME_BASIC_X86_64_ZIP = "aqua-runtime-x86_64-v8.zip";
+    private static final String RUNTIME_BASIC_ARM64_ZIP = "aqua-runtime-arm64-v8a-v8.zip";
+    private static final String RUNTIME_EXTENDED_X86_64_ZIP = "aqua-runtime-x86_64-v7.zip";
+    private static final String RUNTIME_EXTENDED_ARM64_ZIP = "aqua-runtime-arm64-v8a-v7.zip";
+    private static final int RUNTIME_BASIC = 0;
+    private static final int RUNTIME_EXTENDED = 1;
+    private static final int RUNTIME_MAX = 2;
     private static final int BG = Color.rgb(50, 54, 61);
     private static final int BAR = Color.rgb(35, 39, 45);
     private static final int EDITOR_BG = Color.rgb(58, 63, 72);
@@ -98,8 +110,8 @@ public class MainActivity extends Activity {
     private static final int PANEL_WIDTH_DP = 280;
     private static final int PANEL_OPEN_MS = 520;
     private static final int PANEL_CLOSE_MS = 360;
-    private static final int BOOT_BG = Color.rgb(18, 21, 27);
-    private static final int BOOT_PANEL = Color.rgb(28, 32, 40);
+    private static final int BOOT_BG = Color.rgb(35, 37, 42);
+    private static final int BOOT_PANEL = Color.rgb(42, 44, 50);
     private static final int BOOT_TEXT = Color.rgb(232, 238, 247);
 
     private static final Pattern COMMENT_PATTERN = Pattern.compile("#.*$", Pattern.MULTILINE);
@@ -139,6 +151,8 @@ public class MainActivity extends Activity {
     private ScrollView bootstrapOutputScroll;
     private TextView bootstrapStageText;
     private TextView bootstrapOutputText;
+    private LinearLayout bootstrapRuntimeChoices;
+    private Button bootstrapDownloadButton;
     private TextView pipStatusText;
     private TextView pipOutputText;
     private LinearLayout pipPackageList;
@@ -173,6 +187,7 @@ public class MainActivity extends Activity {
     private boolean panelOpen;
     private boolean terminalVisible;
     private boolean bootstrapShowingOutput;
+    private boolean bootstrapDownloading;
     private String terminalStartupCommand;
     private String terminalStartupScript;
     private boolean terminalReturnToEditorOnExit;
@@ -180,11 +195,13 @@ public class MainActivity extends Activity {
     private int changedStart;
     private int changedBefore;
     private int changedCount;
+    private int selectedRuntimeProfile = RUNTIME_BASIC;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        selectedRuntimeProfile = prefs.getInt("runtime_profile", RUNTIME_BASIC);
         initProjectRoots();
         if (runtimeReady()) {
             ensureProjectRoots();
@@ -223,12 +240,12 @@ public class MainActivity extends Activity {
 
         FrameLayout progressTrack = new FrameLayout(this);
         GradientDrawable trackBg = new GradientDrawable();
-        trackBg.setColor(Color.rgb(42, 47, 58));
+        trackBg.setColor(Color.rgb(82, 85, 94));
         trackBg.setCornerRadius(dp(3));
         progressTrack.setBackground(trackBg);
         bootstrapProgressFill = new View(this);
         GradientDrawable fillBg = new GradientDrawable();
-        fillBg.setColor(Color.rgb(214, 244, 255));
+        fillBg.setColor(Color.WHITE);
         fillBg.setCornerRadius(dp(3));
         bootstrapProgressFill.setBackground(fillBg);
         progressTrack.addView(bootstrapProgressFill, new FrameLayout.LayoutParams(dp(2), dp(5)));
@@ -243,6 +260,28 @@ public class MainActivity extends Activity {
         bootstrapStageText.setGravity(Gravity.CENTER);
         bootstrapStageText.setSingleLine(true);
         bootstrapVisualPanel.addView(bootstrapStageText, new LinearLayout.LayoutParams(-1, dp(28)));
+
+        bootstrapRuntimeChoices = new LinearLayout(this);
+        bootstrapRuntimeChoices.setOrientation(LinearLayout.VERTICAL);
+        bootstrapRuntimeChoices.setVisibility(View.GONE);
+        bootstrapRuntimeChoices.addView(runtimeChoiceRow(RUNTIME_BASIC, "Basic Python Runtime", "Coreutils, Python, pip. Small first install.", "16-17 MB", true));
+        bootstrapRuntimeChoices.addView(runtimeChoiceRow(RUNTIME_EXTENDED, "Extended Python Runtime", "LLVM, compilation tools, headers, sysroot.", "~373 MB", true));
+        bootstrapRuntimeChoices.addView(runtimeChoiceRow(RUNTIME_MAX, "Max Runtime", "Full Linux runtime pack.", "coming soon", false));
+        LinearLayout.LayoutParams choicesParams = new LinearLayout.LayoutParams(-1, -2);
+        choicesParams.setMargins(0, dp(18), 0, 0);
+        bootstrapVisualPanel.addView(bootstrapRuntimeChoices, choicesParams);
+
+        bootstrapDownloadButton = new Button(this);
+        bootstrapDownloadButton.setText("Download runtimes");
+        bootstrapDownloadButton.setAllCaps(false);
+        bootstrapDownloadButton.setTextSize(13);
+        bootstrapDownloadButton.setTextColor(Color.rgb(25, 28, 32));
+        bootstrapDownloadButton.setBackground(rounded(Color.WHITE, Color.WHITE, 0, 8));
+        bootstrapDownloadButton.setVisibility(View.GONE);
+        bootstrapDownloadButton.setOnClickListener(v -> beginRuntimeInstall());
+        LinearLayout.LayoutParams downloadParams = new LinearLayout.LayoutParams(-1, dp(42));
+        downloadParams.setMargins(0, dp(10), 0, 0);
+        bootstrapVisualPanel.addView(bootstrapDownloadButton, downloadParams);
 
         FrameLayout.LayoutParams visualParams = new FrameLayout.LayoutParams(-1, -2);
         visualParams.gravity = Gravity.CENTER;
@@ -261,9 +300,66 @@ public class MainActivity extends Activity {
         bootstrapOutputScroll.addView(bootstrapOutputText, new ScrollView.LayoutParams(-1, -2));
         shell.addView(bootstrapOutputScroll, new FrameLayout.LayoutParams(-1, -1));
 
-        setBootstrapProgress(0.02f, "Preparing bootstrap");
+        setBootstrapProgress(0.02f, "Testing connection");
         appendBootstrapOutput("$ bootstrap-start");
         return shell;
+    }
+
+    private View runtimeChoiceRow(int profile, String title, String detail, String size, boolean enabled) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(12), dp(8), dp(12), dp(8));
+        row.setAlpha(enabled ? 1f : 0.42f);
+        row.setBackground(rounded(Color.rgb(62, 65, 72), Color.rgb(94, 98, 108), 1, 7));
+
+        CheckBox check = new CheckBox(this);
+        check.setChecked(profile == selectedRuntimeProfile);
+        check.setEnabled(enabled);
+        if (Build.VERSION.SDK_INT >= 21) {
+            check.setButtonTintList(android.content.res.ColorStateList.valueOf(Color.WHITE));
+        }
+        row.addView(check, new LinearLayout.LayoutParams(dp(42), dp(42)));
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        TextView name = new TextView(this);
+        name.setText(title);
+        name.setTextColor(Color.WHITE);
+        name.setTextSize(14);
+        name.setTypeface(Typeface.DEFAULT_BOLD);
+        name.setSingleLine(true);
+        copy.addView(name, new LinearLayout.LayoutParams(-1, dp(22)));
+
+        TextView desc = new TextView(this);
+        desc.setText(detail);
+        desc.setTextColor(Color.rgb(218, 221, 226));
+        desc.setTextSize(11);
+        desc.setSingleLine(true);
+        copy.addView(desc, new LinearLayout.LayoutParams(-1, dp(20)));
+        row.addView(copy, new LinearLayout.LayoutParams(0, dp(44), 1));
+
+        TextView sizeText = new TextView(this);
+        sizeText.setText(size);
+        sizeText.setTextColor(Color.WHITE);
+        sizeText.setTextSize(11);
+        sizeText.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+        row.addView(sizeText, new LinearLayout.LayoutParams(dp(78), dp(44)));
+
+        if (enabled) {
+            View.OnClickListener listener = v -> {
+                selectedRuntimeProfile = profile;
+                prefs.edit().putInt("runtime_profile", selectedRuntimeProfile).apply();
+                showRuntimeSelector("Connection OK");
+            };
+            row.setOnClickListener(listener);
+            check.setOnClickListener(listener);
+        }
+
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(62));
+        params.setMargins(0, 0, 0, dp(8));
+        row.setLayoutParams(params);
+        return row;
     }
 
     private void toggleBootstrapOutput() {
@@ -275,8 +371,53 @@ public class MainActivity extends Activity {
     private void startBootstrap() {
         Thread bootstrapThread = new Thread(() -> {
             try {
+                setBootstrapProgress(0.08f, "Testing connection");
+                appendBootstrapOutput("$ test-connection " + runtimeDownloadUrl());
+                testRuntimeConnection();
+                showRuntimeSelector("Connection OK");
+            } catch (Exception e) {
+                appendBootstrapOutput("! " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                showRuntimeSelector("Connection failed");
+            }
+        }, "AndroPy-bootstrap");
+        bootstrapThread.start();
+    }
+
+    private void testRuntimeConnection() throws IOException {
+        HttpURLConnection connection = (HttpURLConnection) new URL(runtimeDownloadUrl()).openConnection();
+        connection.setConnectTimeout(8000);
+        connection.setReadTimeout(8000);
+        connection.setRequestMethod("HEAD");
+        int code = connection.getResponseCode();
+        connection.disconnect();
+        if (code < 200 || code >= 400) throw new IOException("server check HTTP " + code);
+    }
+
+    private void showRuntimeSelector(String status) {
+        runOnUiThread(() -> {
+            bootstrapDownloading = false;
+            if (bootstrapRuntimeChoices != null) {
+                bootstrapRuntimeChoices.removeAllViews();
+                bootstrapRuntimeChoices.addView(runtimeChoiceRow(RUNTIME_BASIC, "Basic Python Runtime", "Coreutils, Python, pip. Small first install.", "16-17 MB", true));
+                bootstrapRuntimeChoices.addView(runtimeChoiceRow(RUNTIME_EXTENDED, "Extended Python Runtime", "LLVM, compilation tools, headers, sysroot.", "~373 MB", true));
+                bootstrapRuntimeChoices.addView(runtimeChoiceRow(RUNTIME_MAX, "Max Runtime", "Full Linux runtime pack.", "coming soon", false));
+                bootstrapRuntimeChoices.setVisibility(View.VISIBLE);
+            }
+            if (bootstrapDownloadButton != null) bootstrapDownloadButton.setVisibility(View.VISIBLE);
+            setBootstrapProgress(0.18f, status);
+            if (bootstrapOrb != null) bootstrapOrb.invalidate();
+        });
+    }
+
+    private void beginRuntimeInstall() {
+        bootstrapDownloading = true;
+        if (bootstrapRuntimeChoices != null) bootstrapRuntimeChoices.setVisibility(View.GONE);
+        if (bootstrapDownloadButton != null) bootstrapDownloadButton.setVisibility(View.GONE);
+        if (bootstrapOrb != null) bootstrapOrb.invalidate();
+        Thread bootstrapThread = new Thread(() -> {
+            try {
                 ensureProjectRoots();
-                setBootstrapProgress(1f, "Ready");
+                setBootstrapProgress(1f, "Runtime init complete");
                 appendBootstrapOutput("$ bootstrap-complete");
                 SystemClock.sleep(320);
                 runOnUiThread(this::showEditorAfterBootstrap);
@@ -284,7 +425,7 @@ public class MainActivity extends Activity {
                 appendBootstrapOutput("! " + e.getClass().getSimpleName() + ": " + e.getMessage());
                 setBootstrapProgress(1f, "Bootstrap failed");
             }
-        }, "AndroPy-bootstrap");
+        }, "AndroPy-runtime-install");
         bootstrapThread.start();
     }
 
@@ -1121,8 +1262,8 @@ public class MainActivity extends Activity {
         createBootstrapDirectories();
 
         homeRoot.mkdirs();
-        setBootstrapProgress(0.28f, "Installing base userland");
-        appendBootstrapOutput("$ install-userland " + runtimeAbiAssetDir());
+        setBootstrapProgress(0.28f, "Selecting device runtime");
+        appendBootstrapOutput("$ select-runtime " + runtimeAbiName());
         installRuntimeAssets();
         setBootstrapProgress(0.76f, "Linking native tools");
         appendBootstrapOutput("$ link-native-tools");
@@ -1166,12 +1307,13 @@ public class MainActivity extends Activity {
     private boolean runtimeReady() {
         File marker = new File(prefixRoot, ".andropy-runtime-assets");
         File bash = new File(binRoot, "bash");
-        if (!marker.isFile() || !bash.exists()) return false;
+        File python = new File(binRoot, "python");
+        if (!marker.isFile() || !bash.exists() || !python.exists()) return false;
         try {
             byte[] version = new byte[(int) marker.length()];
             try (InputStream input = new FileInputStream(marker)) {
                 return input.read(version) == version.length
-                        && RUNTIME_ASSET_VERSION.equals(new String(version, StandardCharsets.UTF_8));
+                        && runtimeAssetVersion().equals(new String(version, StandardCharsets.UTF_8));
             }
         } catch (IOException ignored) {
             return false;
@@ -1237,7 +1379,7 @@ public class MainActivity extends Activity {
             byte[] version = new byte[(int) marker.length()];
             try (InputStream input = new FileInputStream(marker)) {
                 if (input.read(version) == version.length
-                        && RUNTIME_ASSET_VERSION.equals(new String(version, StandardCharsets.UTF_8))) {
+                        && runtimeAssetVersion().equals(new String(version, StandardCharsets.UTF_8))) {
                     return;
                 }
             }
@@ -1555,25 +1697,125 @@ public class MainActivity extends Activity {
                 byte[] version = new byte[(int) marker.length()];
                 try (InputStream input = new FileInputStream(marker)) {
                     if (input != null && input.read(version) == version.length
-                            && RUNTIME_ASSET_VERSION.equals(new String(version, StandardCharsets.UTF_8))) {
+                            && runtimeAssetVersion().equals(new String(version, StandardCharsets.UTF_8))) {
                         return;
                     }
                 }
             }
+            setBootstrapProgress(0.30f, "Installing common assets");
+            appendBootstrapOutput("$ install-common-assets");
             copyAssetTree("runtime-common", prefixRoot);
-            copyAssetTree(runtimeAbiAssetDir(), prefixRoot);
+
+            File payload = new File(getCacheDir(), runtimeZipName());
+            if (!payload.isFile() || payload.length() == 0) {
+                setBootstrapProgress(0.36f, "Downloading " + runtimeAbiName() + " runtime");
+                appendBootstrapOutput("$ download-runtime " + runtimeDownloadUrl());
+                downloadRuntimePayload(payload);
+            }
+            setBootstrapProgress(0.62f, "Extracting " + runtimeAbiName() + " runtime");
+            appendBootstrapOutput("$ extract-runtime " + payload.getName());
+            extractZipFile(payload, prefixRoot);
             chmodRuntimeTree(prefixRoot);
             try (FileOutputStream output = new FileOutputStream(marker)) {
-                output.write(RUNTIME_ASSET_VERSION.getBytes(StandardCharsets.UTF_8));
+                output.write(runtimeAssetVersion().getBytes(StandardCharsets.UTF_8));
             }
+            payload.delete();
         } catch (IOException ignored) {
+            appendBootstrapOutput("! runtime install failed: " + ignored.getMessage());
         }
     }
 
     private String runtimeAbiAssetDir() {
-        String abi = Build.SUPPORTED_ABIS.length == 0 ? "" : Build.SUPPORTED_ABIS[0];
-        if ("arm64-v8a".equals(abi)) return "runtime-arm64-v8a";
-        return "runtime-x86_64";
+        return "runtime-" + runtimeAbiName();
+    }
+
+    private String runtimeAbiName() {
+        for (String abi : Build.SUPPORTED_ABIS) {
+            if ("arm64-v8a".equals(abi)) return "arm64-v8a";
+            if ("x86_64".equals(abi)) return "x86_64";
+        }
+        return "x86_64";
+    }
+
+    private String runtimeZipName() {
+        if (selectedRuntimeProfile == RUNTIME_EXTENDED) {
+            return "arm64-v8a".equals(runtimeAbiName()) ? RUNTIME_EXTENDED_ARM64_ZIP : RUNTIME_EXTENDED_X86_64_ZIP;
+        }
+        return "arm64-v8a".equals(runtimeAbiName()) ? RUNTIME_BASIC_ARM64_ZIP : RUNTIME_BASIC_X86_64_ZIP;
+    }
+
+    private String runtimeDownloadUrl() {
+        String base = selectedRuntimeProfile == RUNTIME_EXTENDED ? RUNTIME_EXTENDED_RELEASE_BASE : RUNTIME_BASIC_RELEASE_BASE;
+        return base + runtimeZipName();
+    }
+
+    private String runtimeAssetVersion() {
+        return selectedRuntimeProfile == RUNTIME_EXTENDED ? RUNTIME_EXTENDED_VERSION : RUNTIME_BASIC_VERSION;
+    }
+
+    private void downloadRuntimePayload(File target) throws IOException {
+        File parent = target.getParentFile();
+        if (parent != null) parent.mkdirs();
+        File partial = new File(target.getParentFile(), target.getName() + ".part");
+        HttpURLConnection connection = (HttpURLConnection) new URL(runtimeDownloadUrl()).openConnection();
+        connection.setConnectTimeout(15000);
+        connection.setReadTimeout(30000);
+        connection.setRequestProperty("Accept", "application/octet-stream");
+        int code = connection.getResponseCode();
+        if (code < 200 || code >= 300) {
+            throw new IOException("runtime download HTTP " + code);
+        }
+        long total = connection.getContentLengthLong();
+        long copied = 0;
+        byte[] buffer = new byte[65536];
+        try (InputStream input = connection.getInputStream();
+             FileOutputStream output = new FileOutputStream(partial)) {
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                output.write(buffer, 0, read);
+                copied += read;
+                if (total > 0) {
+                    float fraction = copied / (float) total;
+                    setBootstrapProgress(0.36f + (0.20f * fraction), "Downloading " + formatBytes(copied) + " / " + formatBytes(total));
+                }
+            }
+        } finally {
+            connection.disconnect();
+        }
+        if (!partial.renameTo(target)) {
+            throw new IOException("could not finalize runtime payload");
+        }
+    }
+
+    private void extractZipFile(File zipFile, File targetDir) throws IOException {
+        targetDir.mkdirs();
+        String targetRoot = targetDir.getCanonicalPath() + File.separator;
+        try (ZipInputStream zip = new ZipInputStream(new FileInputStream(zipFile))) {
+            ZipEntry entry;
+            byte[] buffer = new byte[65536];
+            while ((entry = zip.getNextEntry()) != null) {
+                File outputFile = new File(targetDir, entry.getName());
+                String outputPath = outputFile.getCanonicalPath();
+                if (!outputPath.startsWith(targetRoot)) {
+                    zip.closeEntry();
+                    continue;
+                }
+                if (entry.isDirectory()) {
+                    outputFile.mkdirs();
+                } else {
+                    File outputParent = outputFile.getParentFile();
+                    if (outputParent != null) outputParent.mkdirs();
+                    try (OutputStream output = new FileOutputStream(outputFile)) {
+                        int read;
+                        while ((read = zip.read(buffer)) != -1) {
+                            output.write(buffer, 0, read);
+                        }
+                    }
+                    outputFile.setReadable(true, false);
+                }
+                zip.closeEntry();
+            }
+        }
     }
 
     private void copyAssetTree(String assetPath, File targetDir) throws IOException {
@@ -1976,22 +2218,26 @@ public class MainActivity extends Activity {
             float ringRadius = Math.min(width, height) * 0.42f;
             int hueColor = Color.HSVToColor(new float[]{(hueOffset + now / 42f) % 360f, 0.22f, 1f});
             int softHue = Color.argb(74, Color.red(hueColor), Color.green(hueColor), Color.blue(hueColor));
+            int ringColor = bootstrapDownloading ? Color.WHITE : hueColor;
+            int glowColor = bootstrapDownloading ? Color.argb(88, 255, 255, 255) : softHue;
+            ringPaint.setStrokeWidth(bootstrapDownloading ? dp(9) : dp(3));
+            glowPaint.setStrokeWidth(bootstrapDownloading ? dp(17) : dp(9));
 
             spherePaint.setStyle(Paint.Style.FILL);
             spherePaint.setColor(Color.rgb(34, 39, 49));
             canvas.drawCircle(centerX, centerY, radius, spherePaint);
             spherePaint.setStyle(Paint.Style.STROKE);
-            spherePaint.setStrokeWidth(dp(1));
-            spherePaint.setColor(Color.argb(130, Color.red(hueColor), Color.green(hueColor), Color.blue(hueColor)));
+            spherePaint.setStrokeWidth(bootstrapDownloading ? dp(2) : dp(1));
+            spherePaint.setColor(bootstrapDownloading ? Color.WHITE : Color.argb(130, Color.red(hueColor), Color.green(hueColor), Color.blue(hueColor)));
             canvas.drawCircle(centerX, centerY, radius + dp(1), spherePaint);
-            spherePaint.setColor(Color.argb(70, 255, 255, 255));
+            spherePaint.setColor(bootstrapDownloading ? Color.WHITE : Color.argb(70, 255, 255, 255));
             spherePaint.setStrokeWidth(dp(2));
             canvas.drawCircle(centerX - radius * 0.22f, centerY - radius * 0.26f, radius * 0.46f, spherePaint);
 
             ringBounds.set(centerX - ringRadius, centerY - ringRadius, centerX + ringRadius, centerY + ringRadius);
             float start = (now / 8f) % 360f;
-            glowPaint.setColor(softHue);
-            ringPaint.setColor(hueColor);
+            glowPaint.setColor(glowColor);
+            ringPaint.setColor(ringColor);
             canvas.drawArc(ringBounds, start, 270f, false, glowPaint);
             canvas.drawArc(ringBounds, start, 270f, false, ringPaint);
             postInvalidateOnAnimation();

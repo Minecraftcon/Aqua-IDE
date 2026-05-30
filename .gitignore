@@ -15,6 +15,8 @@ local.properties
 app/src/main/assets/runtime-x86_64/
 app/src/main/assets/runtime-arm64-v8a/
 app/src/main/jniLibs/
+runtime-payloads/
+release-assets/
 
 # Cross-compile downloads, caches, extracted userlands, and build products
 comiled-bianaries/build/

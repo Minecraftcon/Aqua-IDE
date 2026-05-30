@@ -19,7 +19,7 @@ This private repository intentionally excludes heavy generated artifacts:
 
 - Gradle and APK build outputs.
 - Emulator screenshots and debug dumps.
-- Generated runtime payloads under `app/src/main/assets/runtime-*`.
+- Generated runtime payloads under `runtime-payloads/`.
 - Generated JNI shared libraries under `app/src/main/jniLibs`.
 - Downloaded/extracted cross-compile caches under `comiled-bianaries`.
 
@@ -29,10 +29,28 @@ Keep those artifacts local or rebuild them from the scripts in `comiled-bianarie
 
 The source tree expects Android SDK/NDK paths from your local environment. Do not commit `local.properties`.
 
-Before a runnable APK build, regenerate or restore:
+Runtime payloads are no longer bundled inside the APK. First launch downloads
+only the device ABI payload from the `runtime-v8` GitHub release:
 
-- `app/src/main/assets/runtime-x86_64`
-- `app/src/main/assets/runtime-arm64-v8a`
+- `aqua-runtime-x86_64-v8.zip`
+- `aqua-runtime-arm64-v8a-v8.zip`
+
+Regenerate those release files with:
+
+```bash
+tools/package-runtime-payloads.sh
+```
+
+For the slim Python-first runtime used by the APK, generate:
+
+```bash
+tools/package-slim-runtime-payloads.sh
+```
+
+Before a fully runnable APK build, regenerate or restore:
+
+- `runtime-payloads/runtime-x86_64`
+- `runtime-payloads/runtime-arm64-v8a`
 - `app/src/main/jniLibs`
 
 The smaller common assets under `app/src/main/assets/runtime-common` are kept in Git.
