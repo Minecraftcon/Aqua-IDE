@@ -36,3 +36,7 @@ Before a runnable APK build, regenerate or restore:
 - `app/src/main/jniLibs`
 
 The smaller common assets under `app/src/main/assets/runtime-common` are kept in Git.
+
+## License
+
+This project is closed source and proprietary. See [LICENSE](LICENSE).
