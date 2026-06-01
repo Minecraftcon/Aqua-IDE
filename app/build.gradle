@@ -2,6 +2,13 @@ plugins {
     id "com.android.application"
 }
 
+def andropyAbi = project.findProperty("andropyAbi") ?: ""
+def andropyRuntimeAssets = andropyAbi == "arm64-v8a"
+        ? "../release-assets/runtime-v9-arm64"
+        : andropyAbi == "x86_64"
+        ? "../release-assets/runtime-v9-x86_64"
+        : "../release-assets/runtime-v9"
+
 android {
     namespace "com.andropy.ide"
     compileSdk 34
@@ -11,15 +18,25 @@ android {
         buildConfig true
     }
 
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
     defaultConfig {
         applicationId "com.andropy.ide"
         minSdk 26
         targetSdk 28
         versionCode 1
         versionName "0.1.0"
+        buildConfigField "String", "ANDROPY_ABI", "\"${andropyAbi}\""
 
         ndk {
-            abiFilters "x86_64", "arm64-v8a"
+            if (andropyAbi) {
+                abiFilters andropyAbi
+            } else {
+                abiFilters "x86_64", "arm64-v8a"
+            }
         }
     }
 
@@ -36,13 +53,15 @@ android {
 
     sourceSets {
         debug {
-            assets.srcDirs += ["../release-assets/runtime-v9"]
+            assets.srcDirs += [andropyRuntimeAssets]
         }
     }
 
 }
 
 dependencies {
+    implementation(platform("io.github.rosemoe:editor-bom:0.24.4"))
+    implementation "io.github.rosemoe:editor"
     implementation "com.termux.termux-app:terminal-view:0.118.0"
     implementation "com.github.luben:zstd-jni:1.5.7-9@aar"
 }

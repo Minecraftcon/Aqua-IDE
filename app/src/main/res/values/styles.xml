@@ -7,4 +7,8 @@
         <item name="android:statusBarColor">@color/andropy_bg</item>
         <item name="android:windowNoTitle">true</item>
     </style>
+    <style name="AiPickerPopupAnimation">
+        <item name="android:windowEnterAnimation">@anim/ai_picker_slide_up</item>
+        <item name="android:windowExitAnimation">@anim/ai_picker_slide_down</item>
+    </style>
 </resources>
