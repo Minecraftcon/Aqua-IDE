@@ -20,6 +20,61 @@ READABLE = 2
 WRITABLE = 4
 EXCEPTION = 8
 
+_FONT_5X7 = {
+    "A": ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
+    "B": ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
+    "C": ("01111", "10000", "10000", "10000", "10000", "10000", "01111"),
+    "D": ("11110", "10001", "10001", "10001", "10001", "10001", "11110"),
+    "E": ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
+    "F": ("11111", "10000", "10000", "11110", "10000", "10000", "10000"),
+    "G": ("01111", "10000", "10000", "10011", "10001", "10001", "01110"),
+    "H": ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
+    "I": ("11111", "00100", "00100", "00100", "00100", "00100", "11111"),
+    "J": ("00111", "00010", "00010", "00010", "10010", "10010", "01100"),
+    "K": ("10001", "10010", "10100", "11000", "10100", "10010", "10001"),
+    "L": ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
+    "M": ("10001", "11011", "10101", "10101", "10001", "10001", "10001"),
+    "N": ("10001", "11001", "10101", "10011", "10001", "10001", "10001"),
+    "O": ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
+    "P": ("11110", "10001", "10001", "11110", "10000", "10000", "10000"),
+    "Q": ("01110", "10001", "10001", "10001", "10101", "10010", "01101"),
+    "R": ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
+    "S": ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
+    "T": ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
+    "U": ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
+    "V": ("10001", "10001", "10001", "10001", "10001", "01010", "00100"),
+    "W": ("10001", "10001", "10001", "10101", "10101", "10101", "01010"),
+    "X": ("10001", "10001", "01010", "00100", "01010", "10001", "10001"),
+    "Y": ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
+    "Z": ("11111", "00001", "00010", "00100", "01000", "10000", "11111"),
+    "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
+    "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
+    "2": ("01110", "10001", "00001", "00010", "00100", "01000", "11111"),
+    "3": ("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
+    "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
+    "5": ("11111", "10000", "10000", "11110", "00001", "00001", "11110"),
+    "6": ("01110", "10000", "10000", "11110", "10001", "10001", "01110"),
+    "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
+    "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
+    "9": ("01110", "10001", "10001", "01111", "00001", "00001", "01110"),
+    "-": ("00000", "00000", "00000", "11111", "00000", "00000", "00000"),
+    "_": ("00000", "00000", "00000", "00000", "00000", "00000", "11111"),
+    ".": ("00000", "00000", "00000", "00000", "00000", "01100", "01100"),
+    ":": ("00000", "01100", "01100", "00000", "01100", "01100", "00000"),
+    "/": ("00001", "00010", "00010", "00100", "01000", "01000", "10000"),
+    "\\": ("10000", "01000", "01000", "00100", "00010", "00010", "00001"),
+    "(": ("00010", "00100", "01000", "01000", "01000", "00100", "00010"),
+    ")": ("01000", "00100", "00010", "00010", "00010", "00100", "01000"),
+    "*": ("00000", "10101", "01110", "11111", "01110", "10101", "00000"),
+    "+": ("00000", "00100", "00100", "11111", "00100", "00100", "00000"),
+    "=": ("00000", "00000", "11111", "00000", "11111", "00000", "00000"),
+    ",": ("00000", "00000", "00000", "00000", "01100", "01100", "01000"),
+    "'": ("01100", "01100", "00100", "00000", "00000", "00000", "00000"),
+    '"': ("01010", "01010", "01010", "00000", "00000", "00000", "00000"),
+    "!": ("00100", "00100", "00100", "00100", "00100", "00000", "00100"),
+    "?": ("01110", "10001", "00001", "00010", "00100", "00000", "00100"),
+}
+
 
 class TclError(Exception):
     pass
@@ -82,6 +137,7 @@ class AquaTkApp:
         self._wantobjects = True
         self._quit = False
         self._last_render = 0.0
+        self._dirty = True
 
     def wantobjects(self):
         return self._wantobjects
@@ -164,6 +220,7 @@ class AquaTkApp:
     def mainloop(self, threshold=0):
         self.render(force=True)
         while not self._quit:
+            self.render()
             time.sleep(0.05)
 
     def quit(self):
@@ -218,7 +275,7 @@ class AquaTkApp:
         for path in paths:
             if path in self.widgets:
                 setattr(self.widgets[path], attr, True)
-        self.render()
+        self._mark_dirty()
         return ""
 
     def _create_widget(self, kind: str, rest: tuple[Any, ...]):
@@ -230,7 +287,7 @@ class AquaTkApp:
         state = WidgetState(path, kind, options)
         self.widgets[path] = state
         self.widgets.setdefault(parent, WidgetState(parent, "frame")).children.append(path)
-        self.render()
+        self._mark_dirty()
         return path
 
     def _widget_call(self, path: str, rest: tuple[Any, ...]):
@@ -243,22 +300,22 @@ class AquaTkApp:
             if not tail:
                 return ""
             widget.options.update(self._parse_options(tail))
-            self.render()
+            self._mark_dirty()
             return ""
         if sub == "cget":
             key = str(tail[0]).lstrip("-") if tail else ""
             return widget.options.get(key, "")
         if sub in {"pack", "grid", "place"}:
             setattr(widget, sub + "ed" if sub != "pack" else "packed", True)
-            self.render()
+            self._mark_dirty()
             return ""
         if sub == "insert":
             widget.options["text"] = str(widget.options.get("text", "")) + " ".join(map(str, tail[1:] or tail))
-            self.render()
+            self._mark_dirty()
             return ""
         if sub == "delete":
             widget.options["text"] = ""
-            self.render()
+            self._mark_dirty()
             return ""
         if widget.kind == "canvas" and (sub.startswith("create_") or sub == "create"):
             if sub == "create":
@@ -275,10 +332,10 @@ class AquaTkApp:
                 index += 1
             opts = self._parse_options(tail[index:])
             widget.canvas_items.append((item_kind, tuple(coords), opts))
-            self.render()
+            self._mark_dirty()
             return str(len(widget.canvas_items))
         if widget.kind == "canvas" and sub in {"delete", "move", "coords", "itemconfigure"}:
-            self.render()
+            self._mark_dirty()
             return ""
         return ""
 
@@ -300,7 +357,7 @@ class AquaTkApp:
             for child in list(self.widgets.get(path, WidgetState(path, "")).children):
                 self._destroy((child,))
             self.widgets.pop(path, None)
-        self.render()
+        self._mark_dirty()
         return ""
 
     def _after(self, rest):
@@ -315,12 +372,13 @@ class AquaTkApp:
             callback = str(rest[1])
             if callback in self.commands:
                 self.commands[callback](*rest[2:])
+                self.render()
         return "after#0"
 
     def _wm(self, rest):
         if len(rest) >= 3 and rest[0] == "title":
             self.widgets["."].options["title"] = rest[2]
-            self.render()
+            self._mark_dirty()
         return ""
 
     def _winfo(self, rest):
@@ -338,16 +396,19 @@ class AquaTkApp:
         return ""
 
     def render(self, force=False):
+        if not force and not self._dirty:
+            return
         now = time.monotonic()
         if not force and now - self._last_render < 0.05:
             return
         self._last_render = now
+        self._dirty = False
         width, height = 720, 480
         frame = bytearray([26, 28, 34, 255] * width * height)
         y = 28
         title = str(self.widgets["."].options.get("title") or self.base_name or "Tk")
         self._rect(frame, width, 0, 0, width, 52, (34, 38, 46, 255))
-        self._text_bar(frame, width, 24, 20, title, (238, 242, 248, 255))
+        self._draw_text(frame, width, 24, 18, title, (238, 242, 248, 255), scale=2)
         for path in self._visible_paths():
             widget = self.widgets[path]
             if widget.kind == "frame":
@@ -357,7 +418,7 @@ class AquaTkApp:
                 text = str(widget.options.get("text") or widget.options.get("value") or widget.kind)
                 bg = (58, 63, 74, 255) if widget.kind != "button" else (76, 82, 95, 255)
                 self._rect(frame, width, 28, y, width - 56, y + 44, bg)
-                self._text_bar(frame, width, 46, y + 16, text, (238, 242, 248, 255))
+                self._draw_text(frame, width, 46, y + 14, text, (238, 242, 248, 255), scale=2)
                 y += 54
             elif widget.kind == "canvas":
                 canvas_height = int(float(widget.options.get("height", 160) or 160))
@@ -372,6 +433,9 @@ class AquaTkApp:
         except Exception:
             pass
 
+    def _mark_dirty(self):
+        self._dirty = True
+
     def _visible_paths(self):
         return [p for p in sorted(self.widgets) if p != "." and (
             self.widgets[p].packed or self.widgets[p].gridded or self.widgets[p].placed)]
@@ -385,7 +449,7 @@ class AquaTkApp:
             elif kind == "line" and len(nums) >= 4:
                 self._line(frame, width, ox + nums[0], oy + nums[1], ox + nums[2], oy + nums[3], fill)
             elif kind == "text" and len(nums) >= 2:
-                self._text_bar(frame, width, ox + nums[0], oy + nums[1], str(opts.get("text", "")), fill)
+                self._draw_text(frame, width, ox + nums[0], oy + nums[1], str(opts.get("text", "")), fill, scale=2)
 
     def _color(self, value):
         names = {
@@ -423,10 +487,20 @@ class AquaTkApp:
                 idx = (y * width + x) * 4
                 frame[idx:idx + 4] = bytes(color)
 
-    def _text_bar(self, frame, width, x, y, text, color):
-        # Lightweight placeholder text renderer: visible bars per character.
+    def _draw_text(self, frame, width, x, y, text, color, scale=1):
         cursor = int(x)
-        for ch in str(text)[:48]:
-            if ch != " ":
-                self._rect(frame, width, cursor, y, cursor + 5, y + 9, color)
-            cursor += 8
+        step = 6 * int(scale)
+        limit = max(1, (width - cursor) // step)
+        for ch in str(text)[:limit]:
+            if ch == " ":
+                cursor += step
+                continue
+            glyph = _FONT_5X7.get(ch.upper()) or _FONT_5X7.get("?")
+            for row, bits in enumerate(glyph):
+                for col, bit in enumerate(bits):
+                    if bit == "1":
+                        self._rect(frame, width,
+                                   cursor + col * scale, y + row * scale,
+                                   cursor + (col + 1) * scale, y + (row + 1) * scale,
+                                   color)
+            cursor += step
