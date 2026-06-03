@@ -186,6 +186,8 @@ class AquaTkApp:
             return ""
         if cmd == "after":
             return self._after(rest)
+        if cmd in {"pack", "grid", "place"}:
+            return self._geometry_manager(cmd, rest)
         if cmd == "mainloop":
             return self.mainloop()
         if cmd == "wm":
@@ -204,6 +206,19 @@ class AquaTkApp:
             return self._widget_call(cmd, rest)
         if cmd in self.commands:
             return self.commands[cmd](*rest)
+        return ""
+
+    def _geometry_manager(self, manager: str, rest: tuple[Any, ...]):
+        paths = []
+        if rest and str(rest[0]) in {"configure", "config"}:
+            paths = [str(item) for item in rest[1:] if str(item).startswith(".")]
+        else:
+            paths = [str(item) for item in rest if str(item).startswith(".")]
+        attr = manager + "ed" if manager != "pack" else "packed"
+        for path in paths:
+            if path in self.widgets:
+                setattr(self.widgets[path], attr, True)
+        self.render()
         return ""
 
     def _create_widget(self, kind: str, rest: tuple[Any, ...]):

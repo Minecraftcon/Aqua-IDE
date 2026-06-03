@@ -2,7 +2,7 @@
 
 This module sends RGBA frames to the app over an Android local socket. It is
 small on purpose: PIL and matplotlib can draw into normal Python image buffers,
-then Aqua paints that buffer in a native Android ImageView.
+then Aqua uploads that buffer into a native Android EGL/OpenGL texture.
 """
 
 from __future__ import annotations
@@ -153,4 +153,3 @@ def install() -> dict[str, bool]:
         "pil": install_pil(),
         "matplotlib": install_matplotlib(),
     }
-

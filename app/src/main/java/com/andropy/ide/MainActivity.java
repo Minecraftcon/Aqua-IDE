@@ -9,7 +9,6 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Canvas;
-import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.ImageFormat;
 import android.graphics.LinearGradient;
@@ -32,6 +31,8 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.net.LocalServerSocket;
 import android.net.LocalSocket;
+import android.opengl.GLES20;
+import android.opengl.GLSurfaceView;
 import android.os.Bundle;
 import android.os.Build;
 import android.os.Handler;
@@ -99,6 +100,8 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -478,7 +481,7 @@ public class MainActivity extends Activity {
     private LocalServerSocket aquaDisplayServerSocket;
     private Thread aquaDisplayServerThread;
     private boolean aquaDisplayVisible;
-    private ImageView aquaDisplayImage;
+    private AquaDisplayEglView aquaDisplayView;
     private TextView aquaDisplayStatusText;
     private int aquaDisplayFrameCounter;
     private int aquaDisplayFrameWidth;
@@ -5409,26 +5412,17 @@ public class MainActivity extends Activity {
 
     private void showAquaDisplayFrame(int width, int height, byte[] rgba, String title) {
         if (rgba == null || rgba.length != width * height * 4) return;
-        if (!aquaDisplayVisible || aquaDisplayImage == null) {
+        if (!aquaDisplayVisible || aquaDisplayView == null) {
             buildAquaDisplayScreen(title);
         }
-        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-        byte[] argb = new byte[rgba.length];
-        for (int i = 0; i < rgba.length; i += 4) {
-            argb[i] = rgba[i + 3];
-            argb[i + 1] = rgba[i];
-            argb[i + 2] = rgba[i + 1];
-            argb[i + 3] = rgba[i + 2];
-        }
-        bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(argb));
         aquaDisplayFrameCounter++;
         aquaDisplayFrameWidth = width;
         aquaDisplayFrameHeight = height;
         aquaDisplayTitle = title == null || title.trim().isEmpty() ? "Aqua display" : title.trim();
-        aquaDisplayImage.setImageBitmap(bitmap);
-        aquaDisplayImage.setContentDescription(aquaDisplayTitle);
+        aquaDisplayView.setContentDescription(aquaDisplayTitle);
+        aquaDisplayView.presentFrame(width, height, rgba);
         if (aquaDisplayStatusText != null) {
-            aquaDisplayStatusText.setText(aquaDisplayTitle + "\n" + width + "x" + height
+            aquaDisplayStatusText.setText(aquaDisplayTitle + "\nEGL  " + width + "x" + height
                     + "  frame=" + aquaDisplayFrameCounter);
         }
     }
@@ -5476,10 +5470,9 @@ public class MainActivity extends Activity {
 
         FrameLayout canvas = new FrameLayout(this);
         canvas.setBackgroundColor(Color.rgb(7, 9, 13));
-        aquaDisplayImage = new ImageView(this);
-        aquaDisplayImage.setBackgroundColor(Color.rgb(7, 9, 13));
-        aquaDisplayImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        canvas.addView(aquaDisplayImage, new FrameLayout.LayoutParams(-1, -1));
+        aquaDisplayView = new AquaDisplayEglView(this);
+        aquaDisplayView.setBackgroundColor(Color.rgb(7, 9, 13));
+        canvas.addView(aquaDisplayView, new FrameLayout.LayoutParams(-1, -1));
 
         aquaDisplayStatusText = new TextView(this);
         aquaDisplayStatusText.setTextColor(Color.rgb(230, 236, 245));
@@ -5512,6 +5505,182 @@ public class MainActivity extends Activity {
         builder.environment().put("TERM", "xterm-256color");
         builder.environment().put("COLORTERM", "truecolor");
         builder.environment().put("PIP_DISABLE_PIP_VERSION_CHECK", "1");
+    }
+
+    private static final class AquaDisplayEglView extends GLSurfaceView {
+        private final AquaDisplayRenderer renderer;
+
+        AquaDisplayEglView(Context context) {
+            super(context);
+            setEGLContextClientVersion(2);
+            setPreserveEGLContextOnPause(true);
+            setZOrderOnTop(true);
+            getHolder().setFormat(PixelFormat.OPAQUE);
+            renderer = new AquaDisplayRenderer();
+            setRenderer(renderer);
+            setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
+        }
+
+        void presentFrame(int width, int height, byte[] rgba) {
+            byte[] copy = Arrays.copyOf(rgba, rgba.length);
+            queueEvent(() -> {
+                renderer.setFrame(width, height, copy);
+                requestRender();
+            });
+        }
+    }
+
+    private static final class AquaDisplayRenderer implements GLSurfaceView.Renderer {
+        private static final String VERTEX_SHADER =
+                "attribute vec4 aPosition;\n"
+                        + "attribute vec2 aTexCoord;\n"
+                        + "varying vec2 vTexCoord;\n"
+                        + "void main() {\n"
+                        + "  gl_Position = aPosition;\n"
+                        + "  vTexCoord = aTexCoord;\n"
+                        + "}\n";
+        private static final String FRAGMENT_SHADER =
+                "precision mediump float;\n"
+                        + "uniform sampler2D uTexture;\n"
+                        + "varying vec2 vTexCoord;\n"
+                        + "void main() {\n"
+                        + "  gl_FragColor = texture2D(uTexture, vTexCoord);\n"
+                        + "}\n";
+        private final FloatBuffer vertexBuffer = ByteBuffer.allocateDirect(8 * 4)
+                .order(ByteOrder.nativeOrder()).asFloatBuffer();
+        private final FloatBuffer texBuffer = ByteBuffer.allocateDirect(8 * 4)
+                .order(ByteOrder.nativeOrder()).asFloatBuffer();
+        private int program;
+        private int textureId;
+        private int positionHandle;
+        private int texCoordHandle;
+        private int textureHandle;
+        private int surfaceWidth = 1;
+        private int surfaceHeight = 1;
+        private int frameWidth;
+        private int frameHeight;
+        private ByteBuffer pendingFrame;
+        private boolean textureDirty;
+
+        @Override
+        public void onSurfaceCreated(javax.microedition.khronos.opengles.GL10 gl,
+                                     javax.microedition.khronos.egl.EGLConfig config) {
+            program = createProgram(VERTEX_SHADER, FRAGMENT_SHADER);
+            positionHandle = GLES20.glGetAttribLocation(program, "aPosition");
+            texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord");
+            textureHandle = GLES20.glGetUniformLocation(program, "uTexture");
+            int[] textures = new int[1];
+            GLES20.glGenTextures(1, textures, 0);
+            textureId = textures[0];
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+            setTextureCoords();
+            GLES20.glClearColor(0.05f, 0.07f, 0.11f, 1f);
+        }
+
+        @Override
+        public void onSurfaceChanged(javax.microedition.khronos.opengles.GL10 gl, int width, int height) {
+            surfaceWidth = Math.max(1, width);
+            surfaceHeight = Math.max(1, height);
+            GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight);
+            updateVertices();
+        }
+
+        @Override
+        public void onDrawFrame(javax.microedition.khronos.opengles.GL10 gl) {
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+            if (program == 0 || textureId == 0) return;
+            if (textureDirty && pendingFrame != null && frameWidth > 0 && frameHeight > 0) {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId);
+                GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+                pendingFrame.position(0);
+                GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA,
+                        frameWidth, frameHeight, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE,
+                        pendingFrame);
+                textureDirty = false;
+                updateVertices();
+            }
+            if (pendingFrame == null || frameWidth <= 0 || frameHeight <= 0) return;
+            GLES20.glUseProgram(program);
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId);
+            GLES20.glUniform1i(textureHandle, 0);
+            vertexBuffer.position(0);
+            GLES20.glEnableVertexAttribArray(positionHandle);
+            GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer);
+            texBuffer.position(0);
+            GLES20.glEnableVertexAttribArray(texCoordHandle);
+            GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texBuffer);
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+            GLES20.glDisableVertexAttribArray(positionHandle);
+            GLES20.glDisableVertexAttribArray(texCoordHandle);
+        }
+
+        void setFrame(int width, int height, byte[] rgba) {
+            frameWidth = width;
+            frameHeight = height;
+            ByteBuffer buffer = ByteBuffer.allocateDirect(rgba.length).order(ByteOrder.nativeOrder());
+            buffer.put(rgba);
+            buffer.position(0);
+            pendingFrame = buffer;
+            textureDirty = true;
+        }
+
+        private void updateVertices() {
+            vertexBuffer.position(0);
+            vertexBuffer.put(new float[]{
+                    -1f, -1f,
+                    1f, -1f,
+                    -1f, 1f,
+                    1f, 1f
+            });
+            vertexBuffer.position(0);
+        }
+
+        private void setTextureCoords() {
+            texBuffer.position(0);
+            texBuffer.put(new float[]{
+                    0f, 1f,
+                    1f, 1f,
+                    0f, 0f,
+                    1f, 0f
+            });
+            texBuffer.position(0);
+        }
+
+        private int createProgram(String vertexSource, String fragmentSource) {
+            int vertexShader = loadShader(GLES20.GL_VERTEX_SHADER, vertexSource);
+            int fragmentShader = loadShader(GLES20.GL_FRAGMENT_SHADER, fragmentSource);
+            int glProgram = GLES20.glCreateProgram();
+            GLES20.glAttachShader(glProgram, vertexShader);
+            GLES20.glAttachShader(glProgram, fragmentShader);
+            GLES20.glLinkProgram(glProgram);
+            int[] linkStatus = new int[1];
+            GLES20.glGetProgramiv(glProgram, GLES20.GL_LINK_STATUS, linkStatus, 0);
+            if (linkStatus[0] == 0) {
+                Log.e("AndroPyDisplay", "EGL program link failed: " + GLES20.glGetProgramInfoLog(glProgram));
+                GLES20.glDeleteProgram(glProgram);
+                return 0;
+            }
+            return glProgram;
+        }
+
+        private int loadShader(int type, String source) {
+            int shader = GLES20.glCreateShader(type);
+            GLES20.glShaderSource(shader, source);
+            GLES20.glCompileShader(shader);
+            int[] compiled = new int[1];
+            GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, compiled, 0);
+            if (compiled[0] == 0) {
+                Log.e("AndroPyDisplay", "EGL shader compile failed: " + GLES20.glGetShaderInfoLog(shader));
+                GLES20.glDeleteShader(shader);
+                return 0;
+            }
+            return shader;
+        }
     }
 
     private GradientDrawable rounded(int fill, int stroke, int strokeDp, int radiusDp) {
