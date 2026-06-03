@@ -1,24 +1,40 @@
 package com.andropy.ide;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.ImageFormat;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Shader;
+import android.graphics.SurfaceTexture;
 import android.graphics.Typeface;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.hardware.camera2.CameraAccessException;
+import android.hardware.camera2.CameraCaptureSession;
+import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraDevice;
+import android.hardware.camera2.CameraManager;
+import android.hardware.camera2.CaptureRequest;
+import android.media.Image;
+import android.media.ImageReader;
+import android.net.LocalServerSocket;
+import android.net.LocalSocket;
 import android.os.Bundle;
 import android.os.Build;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.StatFs;
 import android.os.SystemClock;
 import android.system.ErrnoException;
@@ -38,6 +54,8 @@ import android.util.Log;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.view.Surface;
+import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -131,8 +149,12 @@ public class MainActivity extends Activity {
     private static final String AQUA_APT_REPO = "https://minecraftcon.github.io/Aqua-IDE/apt";
     private static final String RUNTIME_BASIC_X86_64_ZIP = "aqua-runtime-x86_64-v8.zip";
     private static final String RUNTIME_BASIC_ARM64_ZIP = "aqua-runtime-arm64-v8a-v8.zip";
+    private static final String RUNTIME_BASIC_X86_ZIP = "aqua-runtime-x86-v8.zip";
+    private static final String RUNTIME_BASIC_ARMV7_ZIP = "aqua-runtime-armeabi-v7a-v8.zip";
     private static final String RUNTIME_EXTENDED_X86_64_ZIP = "aqua-runtime-x86_64-v9.tar.zst";
     private static final String RUNTIME_EXTENDED_ARM64_ZIP = "aqua-runtime-arm64-v8a-v9.tar.zst";
+    private static final String RUNTIME_EXTENDED_X86_ZIP = "aqua-runtime-x86-v9.tar.zst";
+    private static final String RUNTIME_EXTENDED_ARMV7_ZIP = "aqua-runtime-armeabi-v7a-v9.tar.zst";
     private static final int RUNTIME_BASIC = 0;
     private static final int RUNTIME_EXTENDED = 1;
     private static final int RUNTIME_MAX = 2;
@@ -329,9 +351,12 @@ public class MainActivity extends Activity {
     private LinearLayout pipPackageList;
     private EditText pipInput;
     private Button pipInstallButton;
+    private View pipScanProgressTrack;
+    private View pipScanProgressFill;
     private View bootstrapProgressFill;
     private final StringBuilder bootstrapOutput = new StringBuilder();
     private final StringBuilder pipOutput = new StringBuilder();
+    private int pipScanGeneration;
     private File prefixRoot;
     private File prefixRealRoot;
     private File homeRoot;
@@ -428,6 +453,25 @@ public class MainActivity extends Activity {
     private int aiStatusAnimationToken;
     private long bootstrapLastUiUpdate;
     private long bootstrapExtractedBytes;
+    private volatile boolean opencamBridgeRunning;
+    private volatile boolean opencamStreaming;
+    private LocalServerSocket opencamServerSocket;
+    private Thread opencamServerThread;
+    private boolean opencamVisible;
+    private int opencamFrameCounter;
+    private TextureView opencamTextureView;
+    private TextView opencamStatusText;
+    private HandlerThread opencamCameraThread;
+    private Handler opencamCameraHandler;
+    private CameraDevice opencamCameraDevice;
+    private CameraCaptureSession opencamCaptureSession;
+    private ImageReader opencamImageReader;
+    private String opencamCameraId;
+    private volatile int opencamFrameWidth;
+    private volatile int opencamFrameHeight;
+    private volatile long opencamLastFrameAtMs;
+    private final Object opencamFrameLock = new Object();
+    private byte[] opencamLatestGrayFrame;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -440,6 +484,7 @@ public class MainActivity extends Activity {
             prefs.edit().putInt("runtime_profile", selectedRuntimeProfile).apply();
         }
         initProjectRoots();
+        startOpencamBridge();
         loadAiFileChanges();
         if (runtimeReady()) {
             ensureProjectRoots();
@@ -3129,6 +3174,7 @@ public class MainActivity extends Activity {
         title.setGravity(Gravity.CENTER_VERTICAL);
         title.setPadding(dp(12), 0, 0, 0);
         topBar.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
+
         root.addView(topBar, new LinearLayout.LayoutParams(-1, dp(48)));
 
         View yellowDivider = new View(this);
@@ -3750,6 +3796,7 @@ public class MainActivity extends Activity {
         title.setGravity(Gravity.CENTER_VERTICAL);
         title.setPadding(dp(12), 0, 0, 0);
         topBar.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
+
         root.addView(topBar, new LinearLayout.LayoutParams(-1, dp(48)));
 
         View yellowDivider = new View(this);
@@ -4311,11 +4358,28 @@ public class MainActivity extends Activity {
         title.setGravity(Gravity.CENTER_VERTICAL);
         title.setPadding(dp(12), 0, 0, 0);
         topBar.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
+
+        ImageButton rescan = new ImageButton(this);
+        rescan.setImageResource(getResources().getIdentifier("ic_refresh_24", "drawable", getPackageName()));
+        rescan.setColorFilter(Color.rgb(220, 228, 238));
+        rescan.setBackgroundColor(BAR);
+        rescan.setContentDescription("Hard rescan");
+        rescan.setPadding(dp(7), dp(7), dp(7), dp(7));
+        rescan.setOnClickListener(v -> hardRefreshPipPackages());
+        topBar.addView(rescan, new LinearLayout.LayoutParams(dp(38), dp(38)));
         root.addView(topBar, new LinearLayout.LayoutParams(-1, dp(48)));
 
         View yellowDivider = new View(this);
         yellowDivider.setBackgroundColor(YELLOW_DIVIDER);
         root.addView(yellowDivider, new LinearLayout.LayoutParams(-1, dp(2)));
+
+        pipScanProgressTrack = new FrameLayout(this);
+        pipScanProgressTrack.setBackgroundColor(Color.rgb(25, 29, 35));
+        pipScanProgressTrack.setVisibility(View.GONE);
+        pipScanProgressFill = new View(this);
+        pipScanProgressFill.setBackgroundColor(ACCENT);
+        ((FrameLayout) pipScanProgressTrack).addView(pipScanProgressFill, new FrameLayout.LayoutParams(0, dp(4)));
+        root.addView(pipScanProgressTrack, new LinearLayout.LayoutParams(-1, dp(4)));
 
         LinearLayout installPanel = new LinearLayout(this);
         installPanel.setOrientation(LinearLayout.VERTICAL);
@@ -4445,6 +4509,8 @@ public class MainActivity extends Activity {
 
     private void refreshPipPackages() {
         if (pipPackageList == null) return;
+        int generation = ++pipScanGeneration;
+        hidePipScanProgress();
         pipPackageList.removeAllViews();
         pipPackageList.addView(packageMessage("Scanning installed modules..."));
         if (pipStatusText != null && pipStatusText.getText().toString().equals("Ready")) {
@@ -4452,18 +4518,83 @@ public class MainActivity extends Activity {
         }
         new Thread(() -> {
             List<PipPackageInfo> packages = loadInstalledPipPackages();
-            runOnUiThread(() -> renderPipPackages(packages));
+            runOnUiThread(() -> {
+                if (generation == pipScanGeneration) renderPipPackages(packages);
+            });
         }, "andropy-pip-list").start();
+    }
+
+    private void hardRefreshPipPackages() {
+        if (pipPackageList == null) return;
+        int generation = ++pipScanGeneration;
+        pipPackageList.removeAllViews();
+        pipPackageList.addView(packageMessage("Hard rescanning installed modules..."));
+        if (pipStatusText != null) pipStatusText.setText("Hard rescan starting");
+        showPipScanProgress(0f);
+        new Thread(() -> {
+            List<PipPackageInfo> packages = loadInstalledPipPackagesHard(generation);
+            runOnUiThread(() -> {
+                if (generation != pipScanGeneration) return;
+                showPipScanProgress(1f);
+                renderPipPackages(packages);
+                hidePipScanProgressDelayed();
+            });
+        }, "andropy-pip-hard-scan").start();
+    }
+
+    private void showPipScanProgress(float progress) {
+        if (pipScanProgressTrack == null || pipScanProgressFill == null) return;
+        pipScanProgressTrack.setVisibility(View.VISIBLE);
+        pipScanProgressTrack.post(() -> {
+            ViewGroup.LayoutParams params = pipScanProgressFill.getLayoutParams();
+            params.width = Math.max(dp(2), (int) (pipScanProgressTrack.getWidth() * Math.max(0f, Math.min(1f, progress))));
+            pipScanProgressFill.setLayoutParams(params);
+        });
+    }
+
+    private void hidePipScanProgress() {
+        if (pipScanProgressTrack == null || pipScanProgressFill == null) return;
+        pipScanProgressTrack.setVisibility(View.GONE);
+        ViewGroup.LayoutParams params = pipScanProgressFill.getLayoutParams();
+        params.width = 0;
+        pipScanProgressFill.setLayoutParams(params);
+    }
+
+    private void hidePipScanProgressDelayed() {
+        if (pipScanProgressTrack != null) pipScanProgressTrack.postDelayed(this::hidePipScanProgress, 700);
     }
 
     private List<PipPackageInfo> loadInstalledPipPackages() {
         ensureProjectRoots();
         List<PipPackageInfo> packages = new ArrayList<>();
+        File sitePackages = new File(prefixRealRoot, "lib/python3.13/site-packages");
+        File[] infos = sitePackages.listFiles(file -> file.isDirectory()
+                && (file.getName().endsWith(".dist-info") || file.getName().endsWith(".egg-info")));
+        if (infos == null) return packages;
+        Arrays.sort(infos, Comparator.comparing(file -> file.getName().toLowerCase(Locale.US)));
+        Set<String> seen = new HashSet<>();
+        for (File infoDir : infos) {
+            PipPackageInfo item = readPipPackageInfo(sitePackages, infoDir);
+            if (item == null || item.name.isEmpty()) continue;
+            String key = item.name.toLowerCase(Locale.US);
+            if (seen.add(key)) packages.add(item);
+        }
+        packages.sort(Comparator.comparing(item -> item.name.toLowerCase(Locale.US)));
+        return packages;
+    }
+
+    private List<PipPackageInfo> loadInstalledPipPackagesHard(int generation) {
+        ensureProjectRoots();
+        List<PipPackageInfo> packages = new ArrayList<>();
+        File python = new File(binRoot, "python");
+        if (!python.isFile()) return packages;
         String script = ""
-                + "import importlib.metadata as md, os\n"
+                + "import importlib.metadata as md, os, sys\n"
                 + "def clean(value):\n"
                 + "    return (value or '').replace('\\t', ' ').replace('\\n', ' ').strip()\n"
-                + "for dist in sorted(md.distributions(), key=lambda d: (d.metadata.get('Name') or '').lower()):\n"
+                + "dists = sorted(md.distributions(), key=lambda d: (d.metadata.get('Name') or '').lower())\n"
+                + "print('__COUNT__\\t%d' % len(dists), flush=True)\n"
+                + "for index, dist in enumerate(dists, 1):\n"
                 + "    name = clean(dist.metadata.get('Name'))\n"
                 + "    if not name:\n"
                 + "        continue\n"
@@ -4477,36 +4608,195 @@ public class MainActivity extends Activity {
                 + "                size += os.path.getsize(path)\n"
                 + "        except Exception:\n"
                 + "            pass\n"
-                + "    print(f'{name}\\t{version}\\t{size}\\t{summary}', flush=True)\n";
-        ProcessBuilder builder = new ProcessBuilder(new File(binRoot, "python").getAbsolutePath(), "-c", script);
+                + "    print('__PKG__\\t%d\\t%s\\t%s\\t%d\\t%s' % (index, name, version, size, summary), flush=True)\n";
+        ProcessBuilder builder = new ProcessBuilder(python.getAbsolutePath(), "-c", script);
         builder.redirectErrorStream(true);
         applyRuntimeEnvironment(builder);
+        int total = 1;
+        Set<String> seen = new HashSet<>();
         try {
             Process process = builder.start();
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    String[] parts = line.split("\\t", 4);
-                    if (parts.length >= 3) {
-                        long size = 0;
+                    if (generation != pipScanGeneration) {
+                        process.destroy();
+                        return packages;
+                    }
+                    if (line.startsWith("__COUNT__\t")) {
                         try {
-                            size = Long.parseLong(parts[2]);
+                            total = Math.max(1, Integer.parseInt(line.substring("__COUNT__\t".length()).trim()));
                         } catch (NumberFormatException ignored) {
                         }
-                        String summary = parts.length == 4 ? parts[3] : "";
-                        packages.add(new PipPackageInfo(parts[0], parts[1], size, summary));
+                        int countTotal = total;
+                        runOnUiThread(() -> {
+                            if (generation != pipScanGeneration) return;
+                            showPipScanProgress(0f);
+                            if (pipStatusText != null) pipStatusText.setText("Hard rescanning 0 / " + countTotal);
+                        });
+                        continue;
                     }
+                    if (!line.startsWith("__PKG__\t")) continue;
+                    String[] parts = line.split("\\t", 6);
+                    if (parts.length < 5) continue;
+                    int current = 0;
+                    long size = 0;
+                    try {
+                        current = Integer.parseInt(parts[1]);
+                    } catch (NumberFormatException ignored) {
+                    }
+                    try {
+                        size = Long.parseLong(parts[4]);
+                    } catch (NumberFormatException ignored) {
+                    }
+                    String name = cleanPipMetadata(parts[2]);
+                    if (!name.isEmpty() && seen.add(name.toLowerCase(Locale.US))) {
+                        String summary = parts.length == 6 ? cleanPipMetadata(parts[5]) : "";
+                        packages.add(new PipPackageInfo(name, cleanPipMetadata(parts[3]), size, summary));
+                    }
+                    int progressCurrent = Math.max(1, current);
+                    int progressTotal = total;
+                    runOnUiThread(() -> {
+                        if (generation != pipScanGeneration) return;
+                        showPipScanProgress(progressCurrent / (float) Math.max(1, progressTotal));
+                        if (pipStatusText != null) {
+                            pipStatusText.setText("Hard rescanning " + progressCurrent + " / " + progressTotal);
+                        }
+                    });
                 }
             }
-            process.waitFor();
-        } catch (IOException | InterruptedException ignored) {
-            if (ignored instanceof InterruptedException) Thread.currentThread().interrupt();
+            int exitCode = process.waitFor();
+            if (exitCode != 0) {
+                runOnUiThread(() -> {
+                    if (generation == pipScanGeneration && pipStatusText != null) {
+                        pipStatusText.setText("Hard rescan failed: python exit " + exitCode);
+                    }
+                });
+            }
+        } catch (IOException | InterruptedException error) {
+            if (error instanceof InterruptedException) Thread.currentThread().interrupt();
+            runOnUiThread(() -> {
+                if (generation == pipScanGeneration && pipStatusText != null) {
+                    pipStatusText.setText("Hard rescan failed: " + error.getClass().getSimpleName());
+                }
+            });
         }
-        for (PipPackageInfo item : packages) {
-            String remoteSummary = fetchPyPiSummary(item.name);
-            if (!remoteSummary.isEmpty()) item.summary = remoteSummary;
-        }
+        packages.sort(Comparator.comparing(item -> item.name.toLowerCase(Locale.US)));
         return packages;
+    }
+
+    private PipPackageInfo readPipPackageInfo(File sitePackages, File infoDir) {
+        String fallback = infoDir.getName().replaceFirst("\\.(dist|egg)-info$", "");
+        String name = "";
+        String version = "";
+        String summary = "";
+        File metadata = new File(infoDir, "METADATA");
+        if (!metadata.isFile()) metadata = new File(infoDir, "PKG-INFO");
+        if (metadata.isFile()) {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(metadata), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (line.length() == 0) break;
+                    int colon = line.indexOf(':');
+                    if (colon <= 0) continue;
+                    String key = line.substring(0, colon).trim();
+                    String value = cleanPipMetadata(line.substring(colon + 1));
+                    if ("Name".equalsIgnoreCase(key)) name = value;
+                    else if ("Version".equalsIgnoreCase(key)) version = value;
+                    else if ("Summary".equalsIgnoreCase(key)) summary = value;
+                    if (!name.isEmpty() && !version.isEmpty() && !summary.isEmpty()) break;
+                }
+            } catch (IOException ignored) {
+            }
+        }
+        if (name.isEmpty()) name = fallbackNameFromInfoDir(fallback);
+        if (version.isEmpty()) version = fallbackVersionFromInfoDir(fallback, name);
+        long size = quickPipPackageSize(sitePackages, infoDir, name);
+        return new PipPackageInfo(name, version, size, summary);
+    }
+
+    private PipPackageInfo readPipPackageInfoHard(File sitePackages, File infoDir) {
+        PipPackageInfo item = readPipPackageInfo(sitePackages, infoDir);
+        if (item == null) return null;
+        long size = exactPipPackageSize(sitePackages, infoDir, item.name);
+        return new PipPackageInfo(item.name, item.version, size, item.summary);
+    }
+
+    private String cleanPipMetadata(String value) {
+        if (value == null) return "";
+        return value.replace('\t', ' ').replace('\n', ' ').trim();
+    }
+
+    private String fallbackNameFromInfoDir(String stem) {
+        int split = stem.lastIndexOf('-');
+        return split > 0 ? stem.substring(0, split) : stem;
+    }
+
+    private String fallbackVersionFromInfoDir(String stem, String name) {
+        if (name == null || name.isEmpty() || stem.length() <= name.length() + 1) return "";
+        if (stem.regionMatches(true, 0, name, 0, name.length()) && stem.charAt(name.length()) == '-') {
+            return stem.substring(name.length() + 1);
+        }
+        return "";
+    }
+
+    private long quickPipPackageSize(File sitePackages, File infoDir, String packageName) {
+        long size = boundedDirectorySize(infoDir, 512, 20);
+        String normalized = packageName.replace('-', '_');
+        File moduleDir = new File(sitePackages, normalized);
+        if (!moduleDir.exists()) moduleDir = new File(sitePackages, normalized.toLowerCase(Locale.US));
+        if (moduleDir.exists()) size += boundedDirectorySize(moduleDir, 1800, 45);
+        File moduleFile = new File(sitePackages, normalized + ".py");
+        if (moduleFile.isFile()) size += moduleFile.length();
+        return size;
+    }
+
+    private long exactPipPackageSize(File sitePackages, File infoDir, String packageName) {
+        long size = directorySize(infoDir);
+        String normalized = packageName.replace('-', '_');
+        File moduleDir = new File(sitePackages, normalized);
+        if (!moduleDir.exists()) moduleDir = new File(sitePackages, normalized.toLowerCase(Locale.US));
+        if (moduleDir.exists()) size += directorySize(moduleDir);
+        File moduleFile = new File(sitePackages, normalized + ".py");
+        if (moduleFile.isFile()) size += moduleFile.length();
+        return size;
+    }
+
+    private long directorySize(File root) {
+        long size = 0;
+        ArrayList<File> stack = new ArrayList<>();
+        if (root != null && root.exists()) stack.add(root);
+        while (!stack.isEmpty()) {
+            File current = stack.remove(stack.size() - 1);
+            if (current.isFile()) {
+                size += current.length();
+            } else if (current.isDirectory()) {
+                File[] children = current.listFiles();
+                if (children == null) continue;
+                for (File child : children) stack.add(child);
+            }
+        }
+        return size;
+    }
+
+    private long boundedDirectorySize(File root, int maxFiles, long maxMillis) {
+        long deadline = SystemClock.uptimeMillis() + maxMillis;
+        long size = 0;
+        int files = 0;
+        ArrayList<File> stack = new ArrayList<>();
+        if (root != null && root.exists()) stack.add(root);
+        while (!stack.isEmpty() && files < maxFiles && SystemClock.uptimeMillis() <= deadline) {
+            File current = stack.remove(stack.size() - 1);
+            if (current.isFile()) {
+                size += current.length();
+                files++;
+            } else if (current.isDirectory()) {
+                File[] children = current.listFiles();
+                if (children == null) continue;
+                for (File child : children) stack.add(child);
+            }
+        }
+        return size;
     }
 
     private void renderPipPackages(List<PipPackageInfo> packages) {
@@ -4613,6 +4903,387 @@ public class MainActivity extends Activity {
         });
     }
 
+    private String opencamSocketName() {
+        return "andropy_opencam_" + getPackageName();
+    }
+
+    private void startOpencamBridge() {
+        if (opencamBridgeRunning) return;
+        opencamBridgeRunning = true;
+        opencamServerThread = new Thread(() -> {
+            try {
+                opencamServerSocket = new LocalServerSocket(opencamSocketName());
+                while (opencamBridgeRunning) {
+                    LocalSocket socket = opencamServerSocket.accept();
+                    handleOpencamClient(socket);
+                }
+            } catch (IOException error) {
+                if (opencamBridgeRunning) Log.w("AndroPyOpenCam", "bridge stopped", error);
+            }
+        }, "AndroPy-opencam-bridge");
+        opencamServerThread.start();
+    }
+
+    private void stopOpencamBridge() {
+        opencamBridgeRunning = false;
+        try {
+            if (opencamServerSocket != null) opencamServerSocket.close();
+        } catch (IOException ignored) {
+        }
+        opencamServerSocket = null;
+        opencamServerThread = null;
+    }
+
+    private void handleOpencamClient(LocalSocket socket) {
+        try (LocalSocket ignored = socket;
+             BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+             OutputStream output = socket.getOutputStream()) {
+            String command = reader.readLine();
+            String cleanCommand = command == null ? "" : command.trim();
+            if (cleanCommand.equalsIgnoreCase("FRAME")) {
+                writeOpencamFrame(output);
+            } else {
+                BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(output, StandardCharsets.UTF_8));
+                writer.write(handleOpencamCommand(cleanCommand));
+                writer.write('\n');
+                writer.flush();
+            }
+        } catch (IOException ignored) {
+        }
+    }
+
+    private String handleOpencamCommand(String command) {
+        if (command.equalsIgnoreCase("INFO")) {
+            return opencamCameraStatus("OK info") + " streaming=" + opencamStreaming
+                    + " visible=" + opencamVisible + " last_frame_ms=" + opencamLastFrameAtMs;
+        }
+        if (command.equalsIgnoreCase("DISPLAY") || command.equalsIgnoreCase("DISPLAY BUFFER")) {
+            opencamStreaming = true;
+            runOnUiThread(this::showOpencamBuffer);
+            return opencamCameraStatus("OK display.buffer");
+        }
+        if (command.toUpperCase(Locale.US).startsWith("STREAM")) {
+            String[] parts = command.split("\\s+");
+            boolean enable = parts.length < 2 || !"0".equals(parts[1]);
+            opencamStreaming = enable;
+            runOnUiThread(() -> {
+                if (enable) showOpencamBuffer();
+                else {
+                    stopOpencamCamera();
+                    if (opencamVisible) showEditor();
+                }
+            });
+            return enable ? opencamCameraStatus("OK stream started") : "OK stream stopped";
+        }
+        if (command.toUpperCase(Locale.US).startsWith("CAPTURE")) {
+            String[] parts = command.split("\\s+");
+            int count = 1;
+            if (parts.length > 1) {
+                try {
+                    count = Math.max(1, Integer.parseInt(parts[1]));
+                } catch (NumberFormatException ignored) {
+                }
+            }
+            int first = ++opencamFrameCounter;
+            opencamFrameCounter += Math.max(0, count - 1);
+            return "OK capture count=" + count + " first_frame=" + first
+                    + " source=android-camera width=" + Math.max(0, opencamFrameWidth)
+                    + " height=" + Math.max(0, opencamFrameHeight)
+                    + " format=yuv420 last_frame_ms=" + opencamLastFrameAtMs;
+        }
+        return "ERR unknown opencam command: " + command;
+    }
+
+    private void writeOpencamFrame(OutputStream output) throws IOException {
+        byte[] frame;
+        int width;
+        int height;
+        long frameAt;
+        synchronized (opencamFrameLock) {
+            frame = opencamLatestGrayFrame == null ? null : opencamLatestGrayFrame.clone();
+            width = opencamFrameWidth;
+            height = opencamFrameHeight;
+            frameAt = opencamLastFrameAtMs;
+        }
+        if (frame == null || frame.length == 0 || width <= 0 || height <= 0) {
+            output.write("ERR no-frame\n".getBytes(StandardCharsets.UTF_8));
+            output.flush();
+            return;
+        }
+        String header = "FRAME " + width + " " + height + " gray8 " + frame.length + " " + frameAt + "\n";
+        output.write(header.getBytes(StandardCharsets.UTF_8));
+        output.write(frame);
+        output.flush();
+    }
+
+    private String opencamCameraStatus(String prefix) {
+        return prefix + " source=android-camera width=" + Math.max(0, opencamFrameWidth)
+                + " height=" + Math.max(0, opencamFrameHeight)
+                + " frames=" + Math.max(0, opencamFrameCounter);
+    }
+
+    private boolean hasCameraPermission() {
+        return Build.VERSION.SDK_INT < 23 || checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void ensureOpencamCamera() {
+        if (!opencamVisible || !opencamStreaming) return;
+        if (!hasCameraPermission()) {
+            if (opencamStatusText != null) opencamStatusText.setText("opencam.display.buffer\nwaiting for camera permission");
+            if (Build.VERSION.SDK_INT >= 23) requestPermissions(new String[]{Manifest.permission.CAMERA}, 4205);
+            return;
+        }
+        if (opencamTextureView == null || !opencamTextureView.isAvailable()) return;
+        if (opencamCameraDevice != null) return;
+        startOpencamCameraThread();
+        try {
+            CameraManager manager = (CameraManager) getSystemService(CAMERA_SERVICE);
+            if (manager == null) return;
+            opencamCameraId = chooseOpencamCamera(manager);
+            if (opencamCameraId == null) {
+                if (opencamStatusText != null) opencamStatusText.setText("opencam.display.buffer\nno camera found");
+                return;
+            }
+            manager.openCamera(opencamCameraId, new CameraDevice.StateCallback() {
+                @Override
+                public void onOpened(CameraDevice camera) {
+                    opencamCameraDevice = camera;
+                    startOpencamPreviewSession();
+                }
+
+                @Override
+                public void onDisconnected(CameraDevice camera) {
+                    camera.close();
+                    opencamCameraDevice = null;
+                }
+
+                @Override
+                public void onError(CameraDevice camera, int error) {
+                    camera.close();
+                    opencamCameraDevice = null;
+                    runOnUiThread(() -> {
+                        if (opencamStatusText != null) opencamStatusText.setText("opencam camera error " + error);
+                    });
+                }
+            }, opencamCameraHandler);
+        } catch (CameraAccessException | SecurityException error) {
+            if (opencamStatusText != null) opencamStatusText.setText("opencam camera unavailable\n" + error.getClass().getSimpleName());
+        }
+    }
+
+    private String chooseOpencamCamera(CameraManager manager) throws CameraAccessException {
+        String fallback = null;
+        for (String id : manager.getCameraIdList()) {
+            CameraCharacteristics characteristics = manager.getCameraCharacteristics(id);
+            Integer facing = characteristics.get(CameraCharacteristics.LENS_FACING);
+            if (fallback == null) fallback = id;
+            if (facing != null && facing == CameraCharacteristics.LENS_FACING_BACK) return id;
+        }
+        return fallback;
+    }
+
+    private void startOpencamCameraThread() {
+        if (opencamCameraThread != null) return;
+        opencamCameraThread = new HandlerThread("AndroPy-opencam-camera");
+        opencamCameraThread.start();
+        opencamCameraHandler = new Handler(opencamCameraThread.getLooper());
+    }
+
+    private void startOpencamPreviewSession() {
+        if (opencamCameraDevice == null || opencamTextureView == null || !opencamTextureView.isAvailable()) return;
+        try {
+            SurfaceTexture texture = opencamTextureView.getSurfaceTexture();
+            if (texture == null) return;
+            int width = 640;
+            int height = 480;
+            texture.setDefaultBufferSize(width, height);
+            Surface previewSurface = new Surface(texture);
+            opencamImageReader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 3);
+            opencamFrameWidth = width;
+            opencamFrameHeight = height;
+            opencamImageReader.setOnImageAvailableListener(reader -> {
+                Image image = null;
+                try {
+                    image = reader.acquireLatestImage();
+                    if (image == null) return;
+                    opencamFrameWidth = image.getWidth();
+                    opencamFrameHeight = image.getHeight();
+                    opencamLastFrameAtMs = SystemClock.uptimeMillis();
+                    opencamFrameCounter++;
+                    storeOpencamGrayFrame(image);
+                    updateOpencamStatusText();
+                } finally {
+                    if (image != null) image.close();
+                }
+            }, opencamCameraHandler);
+            CaptureRequest.Builder request = opencamCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+            request.addTarget(previewSurface);
+            request.addTarget(opencamImageReader.getSurface());
+            request.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+            opencamCameraDevice.createCaptureSession(Arrays.asList(previewSurface, opencamImageReader.getSurface()),
+                    new CameraCaptureSession.StateCallback() {
+                        @Override
+                        public void onConfigured(CameraCaptureSession session) {
+                            opencamCaptureSession = session;
+                            try {
+                                session.setRepeatingRequest(request.build(), null, opencamCameraHandler);
+                                updateOpencamStatusText();
+                            } catch (CameraAccessException ignored) {
+                            }
+                        }
+
+                        @Override
+                        public void onConfigureFailed(CameraCaptureSession session) {
+                            runOnUiThread(() -> {
+                                if (opencamStatusText != null) opencamStatusText.setText("opencam camera configure failed");
+                            });
+                        }
+                    }, opencamCameraHandler);
+        } catch (CameraAccessException error) {
+            if (opencamStatusText != null) opencamStatusText.setText("opencam camera start failed");
+        }
+    }
+
+    private void storeOpencamGrayFrame(Image image) {
+        if (image == null || image.getFormat() != ImageFormat.YUV_420_888 || image.getPlanes().length == 0) return;
+        Image.Plane yPlane = image.getPlanes()[0];
+        int width = image.getWidth();
+        int height = image.getHeight();
+        int rowStride = yPlane.getRowStride();
+        int pixelStride = Math.max(1, yPlane.getPixelStride());
+        byte[] gray = new byte[width * height];
+        java.nio.ByteBuffer buffer = yPlane.getBuffer();
+        for (int y = 0; y < height; y++) {
+            int rowOffset = y * rowStride;
+            int outputOffset = y * width;
+            for (int x = 0; x < width; x++) {
+                int index = rowOffset + x * pixelStride;
+                if (index < buffer.limit()) gray[outputOffset + x] = buffer.get(index);
+            }
+        }
+        synchronized (opencamFrameLock) {
+            opencamLatestGrayFrame = gray;
+        }
+    }
+
+    private void updateOpencamStatusText() {
+        if (!opencamVisible || opencamStatusText == null) return;
+        runOnUiThread(() -> {
+            if (opencamStatusText != null) {
+                opencamStatusText.setText("opencam.display.buffer\nsource=android-camera  "
+                        + Math.max(0, opencamFrameWidth) + "x" + Math.max(0, opencamFrameHeight)
+                        + "  frame=" + Math.max(0, opencamFrameCounter));
+            }
+        });
+    }
+
+    private void stopOpencamCamera() {
+        try {
+            if (opencamCaptureSession != null) opencamCaptureSession.close();
+        } catch (Exception ignored) {
+        }
+        opencamCaptureSession = null;
+        try {
+            if (opencamCameraDevice != null) opencamCameraDevice.close();
+        } catch (Exception ignored) {
+        }
+        opencamCameraDevice = null;
+        try {
+            if (opencamImageReader != null) opencamImageReader.close();
+        } catch (Exception ignored) {
+        }
+        opencamImageReader = null;
+        if (opencamCameraThread != null) {
+            opencamCameraThread.quitSafely();
+            opencamCameraThread = null;
+            opencamCameraHandler = null;
+        }
+    }
+
+    private void showOpencamBuffer() {
+        opencamVisible = true;
+        terminalVisible = false;
+        fileManagerVisible = false;
+        settingsVisible = false;
+        stopTerminal();
+        setContentView(buildOpencamBufferScreen());
+    }
+
+    private View buildOpencamBufferScreen() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(Color.rgb(16, 18, 22));
+
+        LinearLayout topBar = new LinearLayout(this);
+        topBar.setOrientation(LinearLayout.HORIZONTAL);
+        topBar.setGravity(Gravity.CENTER_VERTICAL);
+        topBar.setPadding(dp(10), 0, dp(12), 0);
+        topBar.setBackgroundColor(BAR);
+
+        ImageButton back = new ImageButton(this);
+        back.setImageResource(getResources().getIdentifier("ic_arrow_back_24", "drawable", getPackageName()));
+        back.setColorFilter(MUTED);
+        back.setBackgroundColor(BAR);
+        back.setContentDescription("Editor");
+        back.setPadding(dp(7), dp(7), dp(7), dp(7));
+        back.setOnClickListener(v -> showEditor());
+        topBar.addView(back, new LinearLayout.LayoutParams(dp(34), dp(34)));
+
+        TextView title = new TextView(this);
+        title.setText("OpenCam buffer");
+        title.setTextColor(TEXT);
+        title.setTextSize(15);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        title.setPadding(dp(12), 0, 0, 0);
+        topBar.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
+
+        root.addView(topBar, new LinearLayout.LayoutParams(-1, dp(48)));
+
+        View yellowDivider = new View(this);
+        yellowDivider.setBackgroundColor(YELLOW_DIVIDER);
+        root.addView(yellowDivider, new LinearLayout.LayoutParams(-1, dp(2)));
+
+        FrameLayout previewShell = new FrameLayout(this);
+        previewShell.setBackgroundColor(Color.rgb(10, 12, 16));
+        opencamTextureView = new TextureView(this);
+        opencamTextureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+            @Override
+            public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
+                ensureOpencamCamera();
+            }
+
+            @Override
+            public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
+            }
+
+            @Override
+            public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+                stopOpencamCamera();
+                return true;
+            }
+
+            @Override
+            public void onSurfaceTextureUpdated(SurfaceTexture surface) {
+            }
+        });
+        previewShell.addView(opencamTextureView, new FrameLayout.LayoutParams(-1, -1));
+
+        opencamStatusText = new TextView(this);
+        opencamStatusText.setText("opencam.display.buffer\nsource=android-camera");
+        opencamStatusText.setTextColor(Color.rgb(230, 236, 245));
+        opencamStatusText.setTextSize(13);
+        opencamStatusText.setTypeface(Typeface.MONOSPACE);
+        opencamStatusText.setPadding(dp(14), dp(12), dp(14), dp(12));
+        opencamStatusText.setBackground(rounded(Color.argb(120, 20, 24, 30), Color.argb(90, 255, 255, 255), 1, 8));
+        FrameLayout.LayoutParams statusParams = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.START);
+        statusParams.setMargins(dp(16), dp(16), dp(16), dp(16));
+        previewShell.addView(opencamStatusText, statusParams);
+
+        root.addView(previewShell, new LinearLayout.LayoutParams(-1, 0, 1));
+        ensureOpencamCamera();
+        return root;
+    }
+
     private void applyRuntimeEnvironment(ProcessBuilder builder) {
         File realBinRoot = new File(prefixRealRoot, "bin");
         File realLibRoot = new File(prefixRealRoot, "lib");
@@ -4622,6 +5293,7 @@ public class MainActivity extends Activity {
         builder.environment().put("HOME", homeRoot.getAbsolutePath());
         builder.environment().put("ANDROPY_PREFIX_REAL", prefixRealRoot.getAbsolutePath());
         builder.environment().put("ANDROPY_HOME_REAL", homeRealRoot.getAbsolutePath());
+        builder.environment().put("ANDROPY_OPENCAM_SOCKET", opencamSocketName());
         builder.environment().put("PATH", realBinRoot.getAbsolutePath() + ":/system/bin:/system/xbin");
         builder.environment().put("LD_LIBRARY_PATH", libPath);
         builder.environment().put("TMPDIR", realTmpRoot.getAbsolutePath());
@@ -4788,9 +5460,11 @@ public class MainActivity extends Activity {
     }
 
     private void showEditor() {
+        if (opencamVisible) stopOpencamCamera();
         terminalVisible = false;
         fileManagerVisible = false;
         settingsVisible = false;
+        opencamVisible = false;
         choosingProjectFolder = false;
         projectPanelOpen = false;
         terminalReturnToEditorOnExit = false;
@@ -4818,6 +5492,7 @@ public class MainActivity extends Activity {
 
         String startupScript = terminalStartupScript;
         terminalStartupScript = null;
+        if (startupScript != null && startupScript.trim().isEmpty()) startupScript = null;
         File bash = new File(binRoot, "bash");
         File packagedBash = new File(getApplicationInfo().nativeLibraryDir, "libandropy_bash.so");
         File packagedLauncher = new File(getApplicationInfo().nativeLibraryDir, "libandropy_bash_launcher.so");
@@ -4832,19 +5507,21 @@ public class MainActivity extends Activity {
         String path = realBinRoot.getAbsolutePath() + ":/system/bin:/system/xbin";
         String startupCommand = terminalStartupCommand;
         terminalStartupCommand = null;
+        if (startupCommand != null && startupCommand.trim().isEmpty()) startupCommand = null;
         if (startupScript != null) {
             startupCommand = "exec sh " + shellQuote(startupScript);
         }
         String[] args = hasBash
                 ? startupCommand == null
-                ? new String[]{"--rcfile", bashRcFile().getAbsolutePath(), "-i"}
-                : new String[]{"--rcfile", bashRcFile().getAbsolutePath(), "-i", "-c", startupCommand}
-                : startupCommand == null ? new String[]{"-i"} : new String[]{"-i", "-c", startupCommand};
+                ? new String[]{"bash", "--rcfile", bashRcFile().getAbsolutePath(), "-i"}
+                : new String[]{"bash", "--rcfile", bashRcFile().getAbsolutePath(), "-i", "-c", startupCommand}
+                : startupCommand == null ? new String[]{"sh", "-i"} : new String[]{"sh", "-i", "-c", startupCommand};
         String[] env = new String[]{
                 "PREFIX=" + prefixRoot.getAbsolutePath(),
                 "HOME=" + homeRoot.getAbsolutePath(),
                 "ANDROPY_PREFIX_REAL=" + prefixRealRoot.getAbsolutePath(),
                 "ANDROPY_HOME_REAL=" + homeRealRoot.getAbsolutePath(),
+                "ANDROPY_OPENCAM_SOCKET=" + opencamSocketName(),
                 "ANDROPY_START_REAL=" + homeRealRoot.getAbsolutePath(),
                 "ANDROPY_BASH_PATH=" + packagedBash.getAbsolutePath(),
                 "PATH=" + path,
@@ -4933,6 +5610,7 @@ public class MainActivity extends Activity {
         installPackagedRuntimeTools();
         installPythonInteractiveRuntime();
         installPythonPackageRuntime();
+        installOpencamRuntime();
         setBootstrapProgress(0.88f, "Writing shell environment");
         appendBootstrapOutput("$ write-shell-profile");
         installBootstrapHelpers();
@@ -4990,6 +5668,7 @@ public class MainActivity extends Activity {
             writer.write("export HOME=\"" + homeRoot.getAbsolutePath() + "\"\n");
             writer.write("export ANDROPY_PREFIX_REAL=\"" + prefixRealRoot.getAbsolutePath() + "\"\n");
             writer.write("export ANDROPY_HOME_REAL=\"" + homeRealRoot.getAbsolutePath() + "\"\n");
+            writer.write("export ANDROPY_OPENCAM_SOCKET=\"" + opencamSocketName() + "\"\n");
             writer.write("export PATH=\"$ANDROPY_PREFIX_REAL/bin:/system/bin:/system/xbin\"\n");
             writer.write("export LD_LIBRARY_PATH=\"" + getApplicationInfo().nativeLibraryDir + ":$ANDROPY_PREFIX_REAL/lib\"\n");
             writer.write("export TERMINFO=\"$ANDROPY_PREFIX_REAL/share/terminfo\"\n");
@@ -5004,7 +5683,6 @@ public class MainActivity extends Activity {
             writer.write("export TMPDIR=\"$ANDROPY_PREFIX_REAL/tmp\"\n");
             writer.write("[ -r \"$ANDROPY_PREFIX_REAL/etc/profile\" ] && . \"$ANDROPY_PREFIX_REAL/etc/profile\"\n");
             writer.write("cd \"$ANDROPY_HOME_REAL\" 2>/dev/null || cd \"$HOME\" 2>/dev/null\n");
-            writer.write("export PWD=\"$HOME\"\n");
             writer.write("PROMPT_COMMAND='__andropy_prompt_before; __andropy_prompt_build'\n");
             writer.write("__andropy_prompt_before() {\n");
             writer.write("  local now duration\n");
@@ -5174,6 +5852,21 @@ public class MainActivity extends Activity {
         } catch (IOException ignored) {
         }
         installPipLaunchers();
+    }
+
+    private void installOpencamRuntime() {
+        File sitePackages = new File(prefixRoot, "lib/python3.13/site-packages");
+        String assetDir = "runtime-common/python-native/" + runtimeAbiName();
+        try {
+            String[] files = getAssets().list(assetDir);
+            if (files == null) return;
+            for (String file : files) {
+                if (!file.startsWith("opencam") || !file.endsWith(".so")) continue;
+                appendBootstrapOutput("$ install-opencam " + file);
+                copyAssetTree(assetDir + "/" + file, new File(sitePackages, file));
+            }
+        } catch (IOException ignored) {
+        }
     }
 
     private String bundledPipWheelName() {
@@ -5442,19 +6135,32 @@ public class MainActivity extends Activity {
 
     private String runtimeAbiName() {
         String forcedAbi = BuildConfig.ANDROPY_ABI == null ? "" : BuildConfig.ANDROPY_ABI.trim();
-        if ("arm64-v8a".equals(forcedAbi) || "x86_64".equals(forcedAbi)) return forcedAbi;
+        if ("arm64-v8a".equals(forcedAbi) || "x86_64".equals(forcedAbi)
+                || "armeabi-v7a".equals(forcedAbi) || "x86".equals(forcedAbi)) {
+            return forcedAbi;
+        }
         for (String abi : Build.SUPPORTED_ABIS) {
             if ("arm64-v8a".equals(abi)) return "arm64-v8a";
             if ("x86_64".equals(abi)) return "x86_64";
+            if ("armeabi-v7a".equals(abi)) return "armeabi-v7a";
+            if ("x86".equals(abi)) return "x86";
         }
         return "x86_64";
     }
 
     private String runtimeZipName() {
         if (selectedRuntimeProfile == RUNTIME_EXTENDED) {
-            return "arm64-v8a".equals(runtimeAbiName()) ? RUNTIME_EXTENDED_ARM64_ZIP : RUNTIME_EXTENDED_X86_64_ZIP;
+            String abi = runtimeAbiName();
+            if ("arm64-v8a".equals(abi)) return RUNTIME_EXTENDED_ARM64_ZIP;
+            if ("armeabi-v7a".equals(abi)) return RUNTIME_EXTENDED_ARMV7_ZIP;
+            if ("x86".equals(abi)) return RUNTIME_EXTENDED_X86_ZIP;
+            return RUNTIME_EXTENDED_X86_64_ZIP;
         }
-        return "arm64-v8a".equals(runtimeAbiName()) ? RUNTIME_BASIC_ARM64_ZIP : RUNTIME_BASIC_X86_64_ZIP;
+        String abi = runtimeAbiName();
+        if ("arm64-v8a".equals(abi)) return RUNTIME_BASIC_ARM64_ZIP;
+        if ("armeabi-v7a".equals(abi)) return RUNTIME_BASIC_ARMV7_ZIP;
+        if ("x86".equals(abi)) return RUNTIME_BASIC_X86_ZIP;
+        return RUNTIME_BASIC_X86_64_ZIP;
     }
 
     private String runtimeDownloadUrl() {
@@ -9625,6 +10331,10 @@ public class MainActivity extends Activity {
             showEditor();
             return;
         }
+        if (opencamVisible) {
+            showEditor();
+            return;
+        }
         if (settingsVisible) {
             if (!"root".equals(settingsPage)) {
                 showSettings();
@@ -9642,8 +10352,20 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        stopOpencamCamera();
+        stopOpencamBridge();
         stopTerminal();
         super.onDestroy();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 4205 && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            ensureOpencamCamera();
+        } else if (requestCode == 4205 && opencamStatusText != null) {
+            opencamStatusText.setText("opencam.display.buffer\ncamera permission denied");
+        }
     }
 
     private void highlight(Editable editable) {
@@ -11360,6 +12082,69 @@ public class MainActivity extends Activity {
             canvas.drawCircle(14.8f, 12.3f, 1.35f, faceCutoutPaint);
             canvas.drawRoundRect(new RectF(8.2f, 15.4f, 15.8f, 17.1f), 0.8f, 0.8f, faceCutoutPaint);
             canvas.restore();
+        }
+    }
+
+    private final class OpencamBufferView extends View {
+        private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint gridPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint lensPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF frame = new RectF();
+        private final RectF lens = new RectF();
+
+        OpencamBufferView(Context context) {
+            super(context);
+            setBackgroundColor(Color.rgb(14, 16, 20));
+            gridPaint.setStyle(Paint.Style.STROKE);
+            gridPaint.setStrokeWidth(dp(1));
+            gridPaint.setColor(Color.argb(70, 205, 220, 235));
+            textPaint.setTypeface(Typeface.MONOSPACE);
+            textPaint.setTextSize(dp(12));
+            textPaint.setColor(Color.rgb(220, 228, 238));
+            lensPaint.setStyle(Paint.Style.STROKE);
+            lensPaint.setStrokeWidth(dp(2));
+            lensPaint.setColor(Color.argb(160, 255, 215, 95));
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            long now = SystemClock.uptimeMillis();
+            float w = getWidth();
+            float h = getHeight();
+            float margin = dp(18);
+            frame.set(margin, margin, w - margin, h - margin);
+            float t = (now % 2400L) / 2400f;
+            int left = Color.HSVToColor(new float[]{(t * 360f) % 360f, 0.34f, 0.50f});
+            int right = Color.HSVToColor(new float[]{((t * 360f) + 80f) % 360f, 0.42f, 0.32f});
+            fillPaint.setShader(new LinearGradient(frame.left, frame.top, frame.right, frame.bottom, left, right, Shader.TileMode.CLAMP));
+            canvas.drawRoundRect(frame, dp(10), dp(10), fillPaint);
+            fillPaint.setShader(null);
+
+            int columns = 8;
+            int rows = 6;
+            for (int i = 1; i < columns; i++) {
+                float x = frame.left + frame.width() * i / columns;
+                canvas.drawLine(x, frame.top, x, frame.bottom, gridPaint);
+            }
+            for (int i = 1; i < rows; i++) {
+                float y = frame.top + frame.height() * i / rows;
+                canvas.drawLine(frame.left, y, frame.right, y, gridPaint);
+            }
+
+            float cx = frame.left + frame.width() * (0.18f + 0.64f * t);
+            float cy = frame.top + frame.height() * (0.44f + 0.16f * (float) Math.sin(t * Math.PI * 2f));
+            lens.set(cx - dp(38), cy - dp(38), cx + dp(38), cy + dp(38));
+            canvas.drawOval(lens, lensPaint);
+            canvas.drawLine(cx - dp(52), cy, cx + dp(52), cy, lensPaint);
+            canvas.drawLine(cx, cy - dp(52), cx, cy + dp(52), lensPaint);
+
+            int frameNumber = opencamFrameCounter + (int) (now / 100);
+            canvas.drawText("opencam.display.buffer", frame.left + dp(16), frame.top + dp(28), textPaint);
+            canvas.drawText("source=test-buffer  640x480  frame=" + frameNumber, frame.left + dp(16), frame.top + dp(48), textPaint);
+            canvas.drawText(opencamStreaming ? "stream=on" : "stream=idle", frame.left + dp(16), frame.bottom - dp(18), textPaint);
+            postInvalidateDelayed(33);
         }
     }
 

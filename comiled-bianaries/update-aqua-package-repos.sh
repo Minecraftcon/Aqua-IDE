@@ -7,12 +7,21 @@ PY_SIMPLE="$DOCS/python/simple"
 APT="$DOCS/apt"
 DEB_IN="${AQUA_DEB_IN:-$ROOT/comiled-bianaries/out/aqua-cv/debs}"
 WHEEL_IN="${AQUA_WHEEL_IN:-$ROOT/comiled-bianaries/out/aqua-cv/wheels}"
+ASSET_WHEEL_IN="${AQUA_ASSET_WHEEL_IN:-$ROOT/assets/python/wheels}"
 
-mkdir -p "$PY_SIMPLE/numpy" "$PY_SIMPLE/opencv-python" "$PY_SIMPLE/opencv-python-headless"
-if [[ -d "$WHEEL_IN" ]]; then
-  find "$WHEEL_IN" -type f -name '*.whl' | while read -r wheel; do
+normalize_wheel_project() {
+  local name="$1"
+  local project="${name%%-*}"
+  project="${project//_/-}"
+  printf '%s\n' "${project,,}"
+}
+
+copy_wheels_to_simple_index() {
+  local source_dir="$1"
+  [[ -d "$source_dir" ]] || return 0
+  find "$source_dir" -type f -name '*.whl' | while read -r wheel; do
     name="$(basename "$wheel")"
-    project="${name%%-*}"
+    project="$(normalize_wheel_project "$name")"
     case "$name" in
       numpy-*) project="numpy" ;;
       opencv_python_headless-*|opencv-python-headless-*) project="opencv-python-headless" ;;
@@ -21,9 +30,19 @@ if [[ -d "$WHEEL_IN" ]]; then
     mkdir -p "$PY_SIMPLE/$project"
     cp -f "$wheel" "$PY_SIMPLE/$project/$name"
   done
-fi
+}
 
-for project in numpy opencv-python opencv-python-headless; do
+rm -rf "$PY_SIMPLE"
+mkdir -p "$PY_SIMPLE"
+copy_wheels_to_simple_index "$ASSET_WHEEL_IN"
+copy_wheels_to_simple_index "$WHEEL_IN"
+
+projects=()
+while IFS= read -r project_dir; do
+  projects+=("$(basename "$project_dir")")
+done < <(find "$PY_SIMPLE" -mindepth 1 -maxdepth 1 -type d | sort)
+
+for project in "${projects[@]}"; do
   index="$PY_SIMPLE/$project/index.html"
   {
     printf '<!doctype html>\n<html><head><meta charset="utf-8"><title>Links for %s</title></head><body>\n' "$project"
@@ -34,6 +53,15 @@ for project in numpy opencv-python opencv-python-headless; do
     printf '</body></html>\n'
   } > "$index"
 done
+
+{
+  printf '<!doctype html>\n<html><head><meta charset="utf-8"><title>Aqua Python Index</title></head><body>\n'
+  printf '<h1>Aqua Python Index</h1>\n'
+  for project in "${projects[@]}"; do
+    printf '<a href="%s/">%s</a><br>\n' "$project" "$project"
+  done
+  printf '</body></html>\n'
+} > "$PY_SIMPLE/index.html"
 
 mkdir -p "$APT/pool/main" \
   "$APT/dists/stable/main/binary-all" \

@@ -3,10 +3,20 @@ plugins {
 }
 
 def andropyAbi = project.findProperty("andropyAbi") ?: ""
+def andropyDefaultAbis = ["arm64-v8a", "x86_64"]
+def andropyOptionalAbis = ["armeabi-v7a", "x86"]
+def andropyKnownAbis = andropyDefaultAbis + andropyOptionalAbis
+if (andropyAbi && !andropyKnownAbis.contains(andropyAbi)) {
+    throw new GradleException("Unknown Aqua ABI '${andropyAbi}'. Use one of: ${andropyKnownAbis.join(', ')}")
+}
 def andropyRuntimeAssets = andropyAbi == "arm64-v8a"
         ? "../release-assets/runtime-v9-arm64"
+        : andropyAbi == "armeabi-v7a"
+        ? "../release-assets/runtime-v9-armv7"
         : andropyAbi == "x86_64"
         ? "../release-assets/runtime-v9-x86_64"
+        : andropyAbi == "x86"
+        ? "../release-assets/runtime-v9-x86"
         : "../release-assets/runtime-v9"
 
 android {
@@ -35,7 +45,7 @@ android {
             if (andropyAbi) {
                 abiFilters andropyAbi
             } else {
-                abiFilters "x86_64", "arm64-v8a"
+                abiFilters(*andropyDefaultAbis)
             }
         }
     }

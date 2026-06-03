@@ -29,6 +29,13 @@ comiled-bianaries/termux-debs/
 comiled-bianaries/termux-extract/
 comiled-bianaries/termux-packages/
 comiled-bianaries/termux-userland/
+comiled-bianaries/sources/
+runtime-base/
+screenshots/
+
+# Local staged runtime/package payloads. Publish release artifacts separately.
+assets/debs/
+assets/python/debs/
 
 # Host-only notes
 PROJECT_LOG.md
