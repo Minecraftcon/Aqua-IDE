@@ -6089,7 +6089,7 @@ public class MainActivity extends Activity {
         File sitePackages = new File(prefixRoot, "lib/python3.13/site-packages");
         try {
             appendBootstrapOutput("$ install-aquadisplay");
-            copyAssetTree("runtime-common/python/aquadisplay.py", new File(sitePackages, "aquadisplay.py"));
+            copyAssetTree("runtime-common/python", sitePackages);
         } catch (IOException ignored) {
         }
     }
