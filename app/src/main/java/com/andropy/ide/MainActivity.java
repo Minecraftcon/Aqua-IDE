@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Canvas;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.ImageFormat;
 import android.graphics.LinearGradient;
@@ -97,6 +98,7 @@ import java.io.OutputStreamWriter;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -472,6 +474,16 @@ public class MainActivity extends Activity {
     private volatile long opencamLastFrameAtMs;
     private final Object opencamFrameLock = new Object();
     private byte[] opencamLatestGrayFrame;
+    private volatile boolean aquaDisplayBridgeRunning;
+    private LocalServerSocket aquaDisplayServerSocket;
+    private Thread aquaDisplayServerThread;
+    private boolean aquaDisplayVisible;
+    private ImageView aquaDisplayImage;
+    private TextView aquaDisplayStatusText;
+    private int aquaDisplayFrameCounter;
+    private int aquaDisplayFrameWidth;
+    private int aquaDisplayFrameHeight;
+    private String aquaDisplayTitle = "Aqua display";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -485,6 +497,7 @@ public class MainActivity extends Activity {
         }
         initProjectRoots();
         startOpencamBridge();
+        startAquaDisplayBridge();
         loadAiFileChanges();
         if (runtimeReady()) {
             ensureProjectRoots();
@@ -4934,6 +4947,115 @@ public class MainActivity extends Activity {
         opencamServerThread = null;
     }
 
+    private String aquaDisplaySocketName() {
+        return "andropy_display_" + getPackageName();
+    }
+
+    private void startAquaDisplayBridge() {
+        if (aquaDisplayBridgeRunning) return;
+        aquaDisplayBridgeRunning = true;
+        aquaDisplayServerThread = new Thread(() -> {
+            try {
+                aquaDisplayServerSocket = new LocalServerSocket(aquaDisplaySocketName());
+                while (aquaDisplayBridgeRunning) {
+                    LocalSocket socket = aquaDisplayServerSocket.accept();
+                    handleAquaDisplayClient(socket);
+                }
+            } catch (IOException error) {
+                if (aquaDisplayBridgeRunning) Log.w("AndroPyDisplay", "bridge stopped", error);
+            }
+        }, "AndroPy-display-bridge");
+        aquaDisplayServerThread.start();
+    }
+
+    private void stopAquaDisplayBridge() {
+        aquaDisplayBridgeRunning = false;
+        try {
+            if (aquaDisplayServerSocket != null) aquaDisplayServerSocket.close();
+        } catch (IOException ignored) {
+        }
+        aquaDisplayServerSocket = null;
+        aquaDisplayServerThread = null;
+    }
+
+    private void handleAquaDisplayClient(LocalSocket socket) {
+        try (LocalSocket ignored = socket;
+             InputStream input = socket.getInputStream();
+             OutputStream output = socket.getOutputStream()) {
+            String header = readSocketLine(input);
+            if (header == null) {
+                output.write("ERR empty-command\n".getBytes(StandardCharsets.UTF_8));
+                output.flush();
+                return;
+            }
+            String[] parts = header.trim().split("\\s+", 5);
+            String command = parts.length == 0 ? "" : parts[0].toUpperCase(Locale.US);
+            if ("PING".equals(command)) {
+                output.write(("OK display socket=" + aquaDisplaySocketName() + "\n").getBytes(StandardCharsets.UTF_8));
+            } else if ("CLOSE".equals(command)) {
+                runOnUiThread(this::showEditor);
+                output.write("OK close\n".getBytes(StandardCharsets.UTF_8));
+            } else if ("FRAME".equals(command)) {
+                handleAquaDisplayFrame(parts, input, output);
+            } else {
+                output.write(("ERR unknown display command: " + header + "\n").getBytes(StandardCharsets.UTF_8));
+            }
+            output.flush();
+        } catch (IOException ignored) {
+        }
+    }
+
+    private void handleAquaDisplayFrame(String[] parts, InputStream input, OutputStream output) throws IOException {
+        if (parts.length < 4) {
+            output.write("ERR frame-header\n".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        int width;
+        int height;
+        int byteCount;
+        try {
+            width = Integer.parseInt(parts[1]);
+            height = Integer.parseInt(parts[2]);
+            byteCount = Integer.parseInt(parts[3]);
+        } catch (NumberFormatException error) {
+            output.write("ERR frame-size\n".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        if (width <= 0 || height <= 0 || byteCount != width * height * 4 || byteCount > 64 * 1024 * 1024) {
+            output.write("ERR frame-dimensions\n".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        byte[] rgba = readFully(input, byteCount);
+        String title = parts.length >= 5 ? parts[4].trim() : "";
+        if (title.isEmpty()) title = "Aqua display";
+        final String cleanTitle = title;
+        runOnUiThread(() -> showAquaDisplayFrame(width, height, rgba, cleanTitle));
+        output.write(("OK frame " + width + " " + height + "\n").getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String readSocketLine(InputStream input) throws IOException {
+        ByteArrayOutputStream line = new ByteArrayOutputStream(96);
+        while (line.size() < 4096) {
+            int value = input.read();
+            if (value == -1) break;
+            if (value == '\n') break;
+            if (value != '\r') line.write(value);
+        }
+        if (line.size() == 0) return null;
+        return line.toString(StandardCharsets.UTF_8.name());
+    }
+
+    private byte[] readFully(InputStream input, int byteCount) throws IOException {
+        byte[] bytes = new byte[byteCount];
+        int offset = 0;
+        while (offset < byteCount) {
+            int read = input.read(bytes, offset, byteCount - offset);
+            if (read < 0) throw new IOException("unexpected end of frame");
+            offset += read;
+        }
+        return bytes;
+    }
+
     private void handleOpencamClient(LocalSocket socket) {
         try (LocalSocket ignored = socket;
              BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
@@ -5202,6 +5324,7 @@ public class MainActivity extends Activity {
 
     private void showOpencamBuffer() {
         opencamVisible = true;
+        aquaDisplayVisible = false;
         terminalVisible = false;
         fileManagerVisible = false;
         settingsVisible = false;
@@ -5284,6 +5407,94 @@ public class MainActivity extends Activity {
         return root;
     }
 
+    private void showAquaDisplayFrame(int width, int height, byte[] rgba, String title) {
+        if (rgba == null || rgba.length != width * height * 4) return;
+        if (!aquaDisplayVisible || aquaDisplayImage == null) {
+            buildAquaDisplayScreen(title);
+        }
+        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        byte[] argb = new byte[rgba.length];
+        for (int i = 0; i < rgba.length; i += 4) {
+            argb[i] = rgba[i + 3];
+            argb[i + 1] = rgba[i];
+            argb[i + 2] = rgba[i + 1];
+            argb[i + 3] = rgba[i + 2];
+        }
+        bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(argb));
+        aquaDisplayFrameCounter++;
+        aquaDisplayFrameWidth = width;
+        aquaDisplayFrameHeight = height;
+        aquaDisplayTitle = title == null || title.trim().isEmpty() ? "Aqua display" : title.trim();
+        aquaDisplayImage.setImageBitmap(bitmap);
+        aquaDisplayImage.setContentDescription(aquaDisplayTitle);
+        if (aquaDisplayStatusText != null) {
+            aquaDisplayStatusText.setText(aquaDisplayTitle + "\n" + width + "x" + height
+                    + "  frame=" + aquaDisplayFrameCounter);
+        }
+    }
+
+    private void buildAquaDisplayScreen(String title) {
+        aquaDisplayVisible = true;
+        opencamVisible = false;
+        terminalVisible = false;
+        fileManagerVisible = false;
+        settingsVisible = false;
+        stopTerminal();
+        stopOpencamCamera();
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(Color.rgb(16, 18, 22));
+
+        LinearLayout topBar = new LinearLayout(this);
+        topBar.setOrientation(LinearLayout.HORIZONTAL);
+        topBar.setGravity(Gravity.CENTER_VERTICAL);
+        topBar.setPadding(dp(10), 0, dp(12), 0);
+        topBar.setBackgroundColor(BAR);
+
+        ImageButton back = new ImageButton(this);
+        back.setImageResource(getResources().getIdentifier("ic_arrow_back_24", "drawable", getPackageName()));
+        back.setColorFilter(MUTED);
+        back.setBackgroundColor(BAR);
+        back.setContentDescription("Editor");
+        back.setPadding(dp(7), dp(7), dp(7), dp(7));
+        back.setOnClickListener(v -> showEditor());
+        topBar.addView(back, new LinearLayout.LayoutParams(dp(34), dp(34)));
+
+        TextView titleView = new TextView(this);
+        titleView.setText(title == null || title.trim().isEmpty() ? "Aqua display" : title.trim());
+        titleView.setTextColor(TEXT);
+        titleView.setTextSize(15);
+        titleView.setGravity(Gravity.CENTER_VERTICAL);
+        titleView.setPadding(dp(12), 0, 0, 0);
+        topBar.addView(titleView, new LinearLayout.LayoutParams(0, dp(48), 1));
+        root.addView(topBar, new LinearLayout.LayoutParams(-1, dp(48)));
+
+        View yellowDivider = new View(this);
+        yellowDivider.setBackgroundColor(YELLOW_DIVIDER);
+        root.addView(yellowDivider, new LinearLayout.LayoutParams(-1, dp(2)));
+
+        FrameLayout canvas = new FrameLayout(this);
+        canvas.setBackgroundColor(Color.rgb(7, 9, 13));
+        aquaDisplayImage = new ImageView(this);
+        aquaDisplayImage.setBackgroundColor(Color.rgb(7, 9, 13));
+        aquaDisplayImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        canvas.addView(aquaDisplayImage, new FrameLayout.LayoutParams(-1, -1));
+
+        aquaDisplayStatusText = new TextView(this);
+        aquaDisplayStatusText.setTextColor(Color.rgb(230, 236, 245));
+        aquaDisplayStatusText.setTextSize(13);
+        aquaDisplayStatusText.setTypeface(Typeface.MONOSPACE);
+        aquaDisplayStatusText.setPadding(dp(14), dp(12), dp(14), dp(12));
+        aquaDisplayStatusText.setBackground(rounded(Color.argb(120, 20, 24, 30), Color.argb(90, 255, 255, 255), 1, 8));
+        FrameLayout.LayoutParams statusParams = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.START);
+        statusParams.setMargins(dp(16), dp(16), dp(16), dp(16));
+        canvas.addView(aquaDisplayStatusText, statusParams);
+
+        root.addView(canvas, new LinearLayout.LayoutParams(-1, 0, 1));
+        setContentView(root);
+    }
+
     private void applyRuntimeEnvironment(ProcessBuilder builder) {
         File realBinRoot = new File(prefixRealRoot, "bin");
         File realLibRoot = new File(prefixRealRoot, "lib");
@@ -5294,6 +5505,7 @@ public class MainActivity extends Activity {
         builder.environment().put("ANDROPY_PREFIX_REAL", prefixRealRoot.getAbsolutePath());
         builder.environment().put("ANDROPY_HOME_REAL", homeRealRoot.getAbsolutePath());
         builder.environment().put("ANDROPY_OPENCAM_SOCKET", opencamSocketName());
+        builder.environment().put("ANDROPY_DISPLAY_SOCKET", aquaDisplaySocketName());
         builder.environment().put("PATH", realBinRoot.getAbsolutePath() + ":/system/bin:/system/xbin");
         builder.environment().put("LD_LIBRARY_PATH", libPath);
         builder.environment().put("TMPDIR", realTmpRoot.getAbsolutePath());
@@ -5465,6 +5677,7 @@ public class MainActivity extends Activity {
         fileManagerVisible = false;
         settingsVisible = false;
         opencamVisible = false;
+        aquaDisplayVisible = false;
         choosingProjectFolder = false;
         projectPanelOpen = false;
         terminalReturnToEditorOnExit = false;
@@ -5522,6 +5735,7 @@ public class MainActivity extends Activity {
                 "ANDROPY_PREFIX_REAL=" + prefixRealRoot.getAbsolutePath(),
                 "ANDROPY_HOME_REAL=" + homeRealRoot.getAbsolutePath(),
                 "ANDROPY_OPENCAM_SOCKET=" + opencamSocketName(),
+                "ANDROPY_DISPLAY_SOCKET=" + aquaDisplaySocketName(),
                 "ANDROPY_START_REAL=" + homeRealRoot.getAbsolutePath(),
                 "ANDROPY_BASH_PATH=" + packagedBash.getAbsolutePath(),
                 "PATH=" + path,
@@ -5611,6 +5825,7 @@ public class MainActivity extends Activity {
         installPythonInteractiveRuntime();
         installPythonPackageRuntime();
         installOpencamRuntime();
+        installAquaDisplayRuntime();
         setBootstrapProgress(0.88f, "Writing shell environment");
         appendBootstrapOutput("$ write-shell-profile");
         installBootstrapHelpers();
@@ -5669,6 +5884,7 @@ public class MainActivity extends Activity {
             writer.write("export ANDROPY_PREFIX_REAL=\"" + prefixRealRoot.getAbsolutePath() + "\"\n");
             writer.write("export ANDROPY_HOME_REAL=\"" + homeRealRoot.getAbsolutePath() + "\"\n");
             writer.write("export ANDROPY_OPENCAM_SOCKET=\"" + opencamSocketName() + "\"\n");
+            writer.write("export ANDROPY_DISPLAY_SOCKET=\"" + aquaDisplaySocketName() + "\"\n");
             writer.write("export PATH=\"$ANDROPY_PREFIX_REAL/bin:/system/bin:/system/xbin\"\n");
             writer.write("export LD_LIBRARY_PATH=\"" + getApplicationInfo().nativeLibraryDir + ":$ANDROPY_PREFIX_REAL/lib\"\n");
             writer.write("export TERMINFO=\"$ANDROPY_PREFIX_REAL/share/terminfo\"\n");
@@ -5865,6 +6081,15 @@ public class MainActivity extends Activity {
                 appendBootstrapOutput("$ install-opencam " + file);
                 copyAssetTree(assetDir + "/" + file, new File(sitePackages, file));
             }
+        } catch (IOException ignored) {
+        }
+    }
+
+    private void installAquaDisplayRuntime() {
+        File sitePackages = new File(prefixRoot, "lib/python3.13/site-packages");
+        try {
+            appendBootstrapOutput("$ install-aquadisplay");
+            copyAssetTree("runtime-common/python/aquadisplay.py", new File(sitePackages, "aquadisplay.py"));
         } catch (IOException ignored) {
         }
     }
@@ -10335,6 +10560,10 @@ public class MainActivity extends Activity {
             showEditor();
             return;
         }
+        if (aquaDisplayVisible) {
+            showEditor();
+            return;
+        }
         if (settingsVisible) {
             if (!"root".equals(settingsPage)) {
                 showSettings();
@@ -10354,6 +10583,7 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         stopOpencamCamera();
         stopOpencamBridge();
+        stopAquaDisplayBridge();
         stopTerminal();
         super.onDestroy();
     }
