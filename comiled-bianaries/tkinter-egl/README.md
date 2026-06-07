@@ -1,15 +1,17 @@
-# Aqua Tkinter Android Port
+# Aqua Tkinter EGL Android Port
 
 Goal: make Python `tkinter` work in Aqua IDE without X11 by rendering Tk output
 through the app's native Android display bridge.
 
 Current state:
 
-- App runtime includes a temporary `_tkinter.py` fallback.
-- Standard `import tkinter` works instead of crashing on missing `_tkinter`.
-- Basic `Tk`, `Label`, `Button`, and `Canvas` calls render to Android through
-  `aquadisplay`.
-- The fallback is intentionally not the final full Tcl/Tk C engine.
+- The temporary `_tkinter.py` fallback has been removed from the app runtime.
+- Standard `import tkinter` now uses the native `_tkinter` extension when the
+  selected runtime ABI provides one.
+- x86_64 currently has a native `_tkinter` build that can create roots and
+  render basic Canvas shapes.
+- Runtime ABIs without a native `_tkinter` extension will fail honestly until
+  their real Android Tk backend is built.
 
 Native source-port path:
 
@@ -22,5 +24,6 @@ Native source-port path:
    layer to `tkAquaAndroidBridge.c`, then build CPython `Modules/_tkinter.c`
    against those Android Tcl/Tk libraries.
 
-Important: do not ship X11 Tk as "Android tkinter". Aqua's target display path
-is Android app framebuffer output through `ANDROPY_DISPLAY_SOCKET`.
+Important: this folder is the experimental EGL/RGBA Android Tk port. The
+separate `comiled-bianaries/tkinter-wayland` lane is for real Wayland compositor
+testing through sway/Xwayland.

@@ -2,14 +2,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SRC="${AQUA_TKINTER_SRC:-$ROOT/comiled-bianaries/sources/aqua-tkinter}"
-OUT="${AQUA_TKINTER_OUT:-$ROOT/comiled-bianaries/out/aqua-tkinter}"
-ARCH="${AQUA_TKINTER_ARCH:-x86_64}"
+SRC="${AQUA_TKINTER_EGL_SRC:-${AQUA_TKINTER_SRC:-$ROOT/comiled-bianaries/sources/aqua-tkinter-egl}}"
+OUT="${AQUA_TKINTER_EGL_OUT:-${AQUA_TKINTER_OUT:-$ROOT/comiled-bianaries/out/tkinter-egl}}"
+ARCH="${AQUA_TKINTER_EGL_ARCH:-${AQUA_TKINTER_ARCH:-x86_64}}"
 JOBS="${AQUA_BUILD_JOBS:-10}"
 API="${ANDROID_API:-29}"
 NDK="${NDK:-/home/shado/envs/android-ndk-r29}"
 
-"$ROOT/comiled-bianaries/tkinter/fetch-tkinter-sources.sh"
+"$ROOT/comiled-bianaries/tkinter-egl/fetch-tkinter-sources.sh"
 
 case "$ARCH" in
   x86_64)
@@ -79,7 +79,7 @@ the Android RGBA backend under:
 is wired into Tk's platform/display layer.
 
 To experiment anyway:
-  AQUA_BUILD_NATIVE_TK=1 AQUA_TKINTER_ARCH=$ARCH bash comiled-bianaries/tkinter/build-aqua-tkinter.sh
+  AQUA_BUILD_NATIVE_TK=1 AQUA_TKINTER_EGL_ARCH=$ARCH bash comiled-bianaries/tkinter-egl/build-aqua-tkinter.sh
 EOF
   exit 0
 fi

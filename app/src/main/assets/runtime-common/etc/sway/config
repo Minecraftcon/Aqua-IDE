@@ -1,0 +1,35 @@
+set $mod Mod1
+set $term aqua-terminal
+set $wallpaper /data/data/com.andropy.ide/files/usr/share/aqua/wallpapers/default.png
+output HEADLESS-1 resolution 1080x2400
+
+exec_always 'command -v swaybg >/dev/null 2>&1 && swaybg -i "$wallpaper" -m fill'
+
+bindsym $mod+Return exec $term
+bindsym $mod+Shift+q kill
+bindsym $mod+Shift+c reload
+
+font pango:monospace 18
+gaps inner 8
+gaps outer 4
+default_border pixel 2
+client.focused #f4d35e #222832 #f7f7f7 #f4d35e #f4d35e
+client.unfocused #3a414b #1b2028 #c7ced8 #3a414b #3a414b
+
+bar {
+    position bottom
+    height 74
+    workspace_buttons yes
+    strip_workspace_numbers no
+    separator_symbol "  |  "
+    status_command aqua-sway-status
+    colors {
+        background #111820ee
+        statusline #dfe7f2
+        separator #f4d35e
+        focused_workspace #f4d35e #f4d35e #111820
+        active_workspace #273447 #273447 #dfe7f2
+        inactive_workspace #111820 #111820 #9aa6b6
+        urgent_workspace #c84c4c #c84c4c #ffffff
+    }
+}

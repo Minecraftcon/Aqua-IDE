@@ -8,12 +8,15 @@ then Aqua uploads that buffer into a native Android EGL/OpenGL texture.
 from __future__ import annotations
 
 import io
+import json
 import os
 import socket
+import time
 from typing import Any
 
 
 DEFAULT_SOCKET = "andropy_display_com.andropy.ide"
+DISPLAY_SESSION_MS = int(time.time() * 1000)
 _pil_patched = False
 _matplotlib_patched = False
 
@@ -74,6 +77,49 @@ def show(image: Any, *, width: int | None = None, height: int | None = None, tit
         sock.sendall(header)
         sock.sendall(frame)
         return _read_response(sock)
+
+
+def show_scene(scene: dict[str, Any], *, title: str | None = None) -> str:
+    payload = dict(scene)
+    payload.setdefault("_andropy_session_ms", DISPLAY_SESSION_MS)
+    if title is not None:
+        payload["title"] = title
+    if "title" not in payload:
+        payload["title"] = "Aqua display"
+    data = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    header = f"SCENE {len(data)}\n".encode("utf-8")
+    with _connect() as sock:
+        sock.sendall(header)
+        sock.sendall(data)
+        return _read_response(sock)
+
+
+def show_scene_patch(patch: dict[str, Any], *, title: str | None = None) -> str:
+    payload = dict(patch)
+    payload.setdefault("_andropy_session_ms", DISPLAY_SESSION_MS)
+    if title is not None:
+        payload["title"] = title
+    if "title" not in payload:
+        payload["title"] = "Aqua display"
+    data = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    header = f"SCENEPATCH {len(data)}\n".encode("utf-8")
+    with _connect() as sock:
+        sock.sendall(header)
+        sock.sendall(data)
+        return _read_response(sock)
+
+
+def poll_events() -> list[dict[str, Any]]:
+    with _connect() as sock:
+        sock.sendall(b"POLLEVENTS\n")
+        response = _read_response(sock)
+    if not response.startswith("OK "):
+        return []
+    try:
+        payload = json.loads(response[3:])
+        return payload if isinstance(payload, list) else []
+    except Exception:
+        return []
 
 
 def close() -> str:

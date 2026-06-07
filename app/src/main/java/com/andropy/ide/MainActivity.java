@@ -8,6 +8,7 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.ImageFormat;
@@ -52,16 +53,25 @@ import android.text.style.BackgroundColorSpan;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.StyleSpan;
 import android.text.style.TypefaceSpan;
+import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.Surface;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
+import android.view.inputmethod.BaseInputConnection;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.ExtractedText;
+import android.view.inputmethod.ExtractedTextRequest;
+import android.view.inputmethod.InputConnection;
 import android.view.animation.AccelerateInterpolator;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.EditText;
@@ -141,12 +151,20 @@ import io.github.rosemoe.sora.widget.SelectionMovement;
 import io.github.rosemoe.sora.widget.schemes.EditorColorScheme;
 
 public class MainActivity extends Activity {
+    static {
+        try {
+            System.loadLibrary("aqua_native");
+        } catch (UnsatisfiedLinkError error) {
+            Log.w("AndroPy", "Native display library unavailable", error);
+        }
+    }
+
     private static final String TAG_AI = "AndroPyAI";
     private static final String PREFS = "andropy_editor";
     private static final String DEFAULT_FILE = "new.py";
     private static final String PREFIX_DIR = "usr";
     private static final String RUNTIME_BASIC_VERSION = "andropy-basic-runtime-8";
-    private static final String RUNTIME_EXTENDED_VERSION = "andropy-extended-runtime-10";
+    private static final String RUNTIME_EXTENDED_VERSION = "andropy-extended-runtime-11";
     private static final String RUNTIME_BASIC_RELEASE_BASE = "https://github.com/Minecraftcon/Aqua-IDE/releases/download/runtime-v8/";
     private static final String RUNTIME_EXTENDED_RELEASE_BASE = "https://github.com/Minecraftcon/Aqua-IDE/releases/download/runtime-v9/";
     private static final String AQUA_PYTHON_INDEX = "https://minecraftcon.github.io/Aqua-IDE/python/simple";
@@ -314,6 +332,12 @@ public class MainActivity extends Activity {
     private PopupWindow completionPopup;
     private LinearLayout completionList;
     private final ArrayList<CompletionItem> activeCompletions = new ArrayList<>();
+    private PopupWindow findPopup;
+    private EditText findInput;
+    private TextView findCountText;
+    private final ArrayList<int[]> findMatches = new ArrayList<>();
+    private String findQuery = "";
+    private int findMatchIndex = -1;
     private View scrim;
     private LinearLayout sidePanel;
     private View projectScrim;
@@ -432,6 +456,7 @@ public class MainActivity extends Activity {
     private boolean bootstrapDownloading;
     private String terminalStartupCommand;
     private String terminalStartupScript;
+    private String terminalScreenTitle;
     private boolean terminalReturnToEditorOnExit;
     private boolean pendingEditorSwitchAnimation;
     private int pendingEditorSwitchDirection = 1;
@@ -482,11 +507,24 @@ public class MainActivity extends Activity {
     private Thread aquaDisplayServerThread;
     private boolean aquaDisplayVisible;
     private AquaDisplayEglView aquaDisplayView;
+    private AquaDisplaySceneView aquaDisplaySceneView;
+    private AquaWaylandSurfaceView aquaWaylandView;
+    private EditText aquaDisplayInputProxy;
+    private View aquaKeyboardToggleButton;
+    private boolean aquaDisplayKeyboardRequested;
     private TextView aquaDisplayStatusText;
+    private TextView aquaDisplayTitleText;
     private int aquaDisplayFrameCounter;
     private int aquaDisplayFrameWidth;
     private int aquaDisplayFrameHeight;
+    private long aquaDisplayFpsWindowStartMs;
+    private int aquaDisplayFpsWindowFrames;
+    private float aquaDisplayFps;
+    private volatile long aquaDisplayActiveSessionMs;
+    private volatile boolean aquaDisplayAcceptingFrames;
     private String aquaDisplayTitle = "Aqua display";
+    private final Object aquaDisplayInputLock = new Object();
+    private final ArrayList<JSONObject> aquaDisplayInputEvents = new ArrayList<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -499,6 +537,7 @@ public class MainActivity extends Activity {
             prefs.edit().putInt("runtime_profile", selectedRuntimeProfile).apply();
         }
         initProjectRoots();
+        ensureStorageAccessPermission();
         startOpencamBridge();
         startAquaDisplayBridge();
         loadAiFileChanges();
@@ -511,6 +550,52 @@ public class MainActivity extends Activity {
         } else {
             setContentView(buildBootstrapScreen());
             startBootstrap();
+        }
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (aquaDisplayVisible && aquaDisplaySceneView != null && event != null
+                && event.getAction() == KeyEvent.ACTION_DOWN) {
+            String keyName = aquaDisplayKeyNameFor(event.getKeyCode());
+            String text = "";
+            int unicode = event.getUnicodeChar();
+            if (unicode >= 32 && unicode != 127) {
+                text = new String(Character.toChars(unicode));
+            }
+            if (keyName != null || !text.isEmpty()) {
+                enqueueAquaDisplayKey(keyName == null ? "TEXT" : keyName, text);
+                return true;
+            }
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    private String aquaDisplayKeyNameFor(int keyCode) {
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_DEL:
+                return "BACKSPACE";
+            case KeyEvent.KEYCODE_FORWARD_DEL:
+                return "DELETE";
+            case KeyEvent.KEYCODE_ENTER:
+            case KeyEvent.KEYCODE_NUMPAD_ENTER:
+                return "ENTER";
+            case KeyEvent.KEYCODE_SPACE:
+                return "SPACE";
+            case KeyEvent.KEYCODE_TAB:
+                return "TAB";
+            case KeyEvent.KEYCODE_DPAD_LEFT:
+                return "LEFT";
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+                return "RIGHT";
+            case KeyEvent.KEYCODE_DPAD_UP:
+                return "UP";
+            case KeyEvent.KEYCODE_DPAD_DOWN:
+                return "DOWN";
+            case KeyEvent.KEYCODE_ESCAPE:
+                return "ESCAPE";
+            default:
+                return null;
         }
     }
 
@@ -654,6 +739,7 @@ public class MainActivity extends Activity {
     }
 
     private void onEditorContentChanged(ContentChangeEvent event) {
+        if (handleEditorInsertedShortcut(event)) return;
         String code = editorText();
         prefs.edit().putString("code", code).apply();
         saveOpenedFileQuietly(code);
@@ -663,7 +749,30 @@ public class MainActivity extends Activity {
         refreshCompletions();
         if (editor != null) editor.postDelayed(this::refreshCompletions, 60);
         scheduleAiCompletion();
+        if (findPopup != null && findPopup.isShowing()) refreshFindMatches(false);
         updatePanelStatus();
+    }
+
+    private boolean handleEditorInsertedShortcut(ContentChangeEvent event) {
+        if (editor == null || applyingHelperEdit || event == null
+                || event.getAction() != ContentChangeEvent.ACTION_INSERT || !extraAlt) {
+            return false;
+        }
+        CharSequence changed = event.getChangedText();
+        if (changed == null || changed.length() != 1) return false;
+        char inserted = changed.charAt(0);
+        if (inserted != 'f' && inserted != 'F') return false;
+        int insertedAt = Math.max(0, event.getChangeStart().index);
+        applyingHelperEdit = true;
+        replaceEditorRange(insertedAt, insertedAt + 1, "");
+        setEditorSelection(insertedAt);
+        applyingHelperEdit = false;
+        showFindOverlay();
+        consumeExtraOneShot();
+        prefs.edit().putString("code", editorText()).apply();
+        saveOpenedFileQuietly(editorText());
+        updatePanelStatus();
+        return true;
     }
 
     private Content editorContent() {
@@ -1090,7 +1199,16 @@ public class MainActivity extends Activity {
     }
 
     private void showEditorAfterBootstrap() {
+        exitAquaDisplayFullscreen();
+        installAquaDisplayRuntime();
         terminalVisible = false;
+        fileManagerVisible = false;
+        settingsVisible = false;
+        opencamVisible = false;
+        aquaDisplayVisible = false;
+        choosingProjectFolder = false;
+        projectPanelOpen = false;
+        terminalReturnToEditorOnExit = false;
         setContentView(buildEditorScreen());
     }
 
@@ -1198,6 +1316,11 @@ public class MainActivity extends Activity {
         editor.subscribeEvent(SelectionChangeEvent.class, (event, unsubscribe) -> updatePanelStatus());
         editor.setOnKeyListener((v, keyCode, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (keyCode == KeyEvent.KEYCODE_F && (event.isAltPressed() || extraAlt)) {
+                showFindOverlay();
+                consumeExtraOneShot();
+                return true;
+            }
             if (hasAiSuggestion()) {
                 int digit = digitForKeyCode(keyCode);
                 if (digit >= 2) {
@@ -1210,6 +1333,7 @@ public class MainActivity extends Activity {
                 return true;
             }
             if (keyCode == KeyEvent.KEYCODE_ESCAPE) {
+                if (dismissFindOverlay()) return true;
                 dismissCompletions();
                 clearAiSuggestion();
                 return true;
@@ -3007,6 +3131,168 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void showExamples() {
+        saveEditorState();
+        terminalVisible = false;
+        fileManagerVisible = false;
+        settingsVisible = false;
+        opencamVisible = false;
+        stopTerminal();
+        setContentView(buildExamplesScreen());
+    }
+
+    private View buildExamplesScreen() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(Color.rgb(31, 35, 41));
+
+        LinearLayout topBar = new LinearLayout(this);
+        topBar.setOrientation(LinearLayout.HORIZONTAL);
+        topBar.setGravity(Gravity.CENTER_VERTICAL);
+        topBar.setPadding(dp(10), 0, dp(12), 0);
+        topBar.setBackgroundColor(BAR);
+
+        ImageButton back = new ImageButton(this);
+        back.setImageResource(getResources().getIdentifier("ic_menu_24", "drawable", getPackageName()));
+        back.setColorFilter(MUTED);
+        back.setBackgroundColor(BAR);
+        back.setContentDescription("Editor");
+        back.setPadding(dp(7), dp(7), dp(7), dp(7));
+        back.setOnClickListener(v -> showEditor());
+        topBar.addView(back, new LinearLayout.LayoutParams(dp(34), dp(34)));
+
+        TextView title = new TextView(this);
+        title.setText("Examples");
+        title.setTextColor(TEXT);
+        title.setTextSize(15);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        title.setPadding(dp(12), 0, 0, 0);
+        topBar.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
+        root.addView(topBar, new LinearLayout.LayoutParams(-1, dp(48)));
+
+        View yellowDivider = new View(this);
+        yellowDivider.setBackgroundColor(YELLOW_DIVIDER);
+        root.addView(yellowDivider, new LinearLayout.LayoutParams(-1, dp(2)));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(14), dp(12), dp(14), dp(18));
+        scroll.addView(list, new ScrollView.LayoutParams(-1, -2));
+
+        int count = 0;
+        try {
+            String[] packages = getAssets().list("examples");
+            if (packages != null) {
+                Arrays.sort(packages);
+                for (String packageName : packages) {
+                    String packagePath = "examples/" + packageName;
+                    String[] files = getAssets().list(packagePath);
+                    if (files == null || files.length == 0) continue;
+                    Arrays.sort(files);
+                    list.addView(exampleSection(packageName));
+                    for (String fileName : files) {
+                        if (!fileName.endsWith(".py")) continue;
+                        list.addView(exampleRow(packagePath + "/" + fileName, packageName, fileName));
+                        count++;
+                    }
+                }
+            }
+        } catch (IOException ignored) {
+        }
+        if (count == 0) {
+            TextView empty = new TextView(this);
+            empty.setText("No examples bundled");
+            empty.setTextColor(MUTED);
+            empty.setTextSize(14);
+            empty.setGravity(Gravity.CENTER);
+            list.addView(empty, new LinearLayout.LayoutParams(-1, dp(120)));
+        }
+        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        return root;
+    }
+
+    private View exampleSection(String packageName) {
+        TextView label = new TextView(this);
+        label.setText(prettyExampleTitle(packageName));
+        label.setTextColor(YELLOW_DIVIDER);
+        label.setTextSize(14);
+        label.setTypeface(Typeface.DEFAULT_BOLD);
+        label.setGravity(Gravity.CENTER_VERTICAL);
+        label.setPadding(dp(2), dp(12), 0, dp(6));
+        return label;
+    }
+
+    private View exampleRow(String assetPath, String packageName, String fileName) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(14), dp(9), dp(14), dp(9));
+        row.setBackground(rounded(Color.rgb(39, 44, 52), Color.rgb(72, 82, 96), 1, 7));
+        row.setOnClickListener(v -> openBundledExample(assetPath, packageName, fileName));
+
+        TextView title = new TextView(this);
+        title.setText(prettyExampleTitle(fileName.replaceFirst("\\.py$", "")));
+        title.setTextColor(TEXT);
+        title.setTextSize(15);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setSingleLine(true);
+        row.addView(title, new LinearLayout.LayoutParams(-1, dp(24)));
+
+        TextView subtitle = new TextView(this);
+        subtitle.setText("examples/" + packageName + "/" + fileName);
+        subtitle.setTextColor(MUTED);
+        subtitle.setTextSize(12);
+        subtitle.setSingleLine(true);
+        row.addView(subtitle, new LinearLayout.LayoutParams(-1, dp(20)));
+
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(62));
+        params.setMargins(0, 0, 0, dp(8));
+        row.setLayoutParams(params);
+        return row;
+    }
+
+    private String prettyExampleTitle(String raw) {
+        String value = raw == null ? "" : raw.replace('_', ' ').replace('-', ' ').trim();
+        if (value.isEmpty()) return "Example";
+        StringBuilder out = new StringBuilder(value.length());
+        boolean cap = true;
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (Character.isWhitespace(ch)) {
+                out.append(ch);
+                cap = true;
+            } else if (cap) {
+                out.append(Character.toUpperCase(ch));
+                cap = false;
+            } else {
+                out.append(ch);
+            }
+        }
+        return out.toString()
+                .replace("Tflite", "TFLite")
+                .replace("Ui", "UI")
+                .replace("Api", "API");
+    }
+
+    private void openBundledExample(String assetPath, String packageName, String fileName) {
+        try {
+            File dir = new File(homeRoot, "examples/" + packageName);
+            if (!dir.exists() && !dir.mkdirs()) throw new IOException("mkdir failed");
+            File target = new File(dir, fileName);
+            try (InputStream input = getAssets().open(assetPath);
+                 OutputStream output = new FileOutputStream(target)) {
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
+            }
+            openFileInEditor(target, true);
+        } catch (IOException error) {
+            Toast.makeText(this, "Cannot open example", Toast.LENGTH_SHORT).show();
+        }
+    }
+
     private LinearLayout buildSidePanel() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -3028,8 +3314,8 @@ public class MainActivity extends Activity {
         content.addView(divider());
         content.addView(drawerRow("Pip", "Pip", "ic_pip_24", "pip", ""));
         content.addView(drawerRow("Share", "Share", "ic_share_24", ""));
-        content.addView(drawerRow("Pastebin", "Pastebin", "ic_upload_24", ""));
-        content.addView(drawerRow("Samples", "Samples", "ic_samples_24", ""));
+        content.addView(drawerRow("Wayland", "Wayland", "ic_wayland_24", "wayland", ""));
+        content.addView(drawerRow("Samples", "Samples", "ic_samples_24", "samples", ""));
         content.addView(divider());
         content.addView(sectionLabel("Settings"));
         content.addView(drawerRow("Settings", "Settings", "ic_settings_24", "settings", ""));
@@ -3112,8 +3398,12 @@ public class MainActivity extends Activity {
                 showTerminal();
             } else if ("interpreter".equals(route)) {
                 showInterpreter();
+            } else if ("wayland".equals(route)) {
+                showWaylandSession();
             } else if ("pip".equals(route)) {
                 showPip();
+            } else if ("samples".equals(route)) {
+                showExamples();
             } else if ("settings".equals(route)) {
                 showSettings();
             } else {
@@ -3184,7 +3474,9 @@ public class MainActivity extends Activity {
         topBar.addView(back, new LinearLayout.LayoutParams(dp(34), dp(34)));
 
         TextView title = new TextView(this);
-        title.setText("Terminal");
+        String screenTitle = terminalScreenTitle;
+        if (screenTitle == null || screenTitle.trim().isEmpty()) screenTitle = "Terminal";
+        title.setText(screenTitle);
         title.setTextColor(TEXT);
         title.setTextSize(15);
         title.setGravity(Gravity.CENTER_VERTICAL);
@@ -3214,15 +3506,33 @@ public class MainActivity extends Activity {
     private void showTerminal() {
         prefs.edit().putString("code", editor == null ? "" : editor.getText().toString()).apply();
         settingsVisible = false;
+        terminalReturnToEditorOnExit = false;
+        terminalScreenTitle = "Terminal";
         setContentView(buildTerminalScreen());
         termuxTerminalView.requestFocus();
     }
 
     private void showInterpreter() {
         prefs.edit().putString("code", editor == null ? "" : editor.getText().toString()).apply();
+        terminalReturnToEditorOnExit = false;
+        terminalScreenTitle = "Interpreter";
         terminalStartupCommand = "exec python";
         setContentView(buildTerminalScreen());
         termuxTerminalView.requestFocus();
+    }
+
+    private void showWaylandSession() {
+        prefs.edit().putString("code", editor == null ? "" : editor.getText().toString()).apply();
+        settingsVisible = false;
+        installAquaWaylandRuntime();
+        startAquaDisplayBridge();
+        terminalReturnToEditorOnExit = false;
+        terminalScreenTitle = "Wayland";
+        terminalStartupCommand = "exec aqua-phoc";
+        Toast.makeText(this, "Starting touch Wayland session", Toast.LENGTH_SHORT).show();
+        setContentView(buildTerminalScreen());
+        termuxTerminalView.requestFocus();
+        termuxTerminalView.postDelayed(() -> showAquaWaylandHost("Aqua Phoc"), 420);
     }
 
     private void showPip() {
@@ -4924,17 +5234,28 @@ public class MainActivity extends Activity {
     }
 
     private void startOpencamBridge() {
-        if (opencamBridgeRunning) return;
+        if (opencamBridgeRunning && opencamServerSocket != null) return;
+        if (opencamBridgeRunning && opencamServerThread != null && opencamServerThread.isAlive()) return;
         opencamBridgeRunning = true;
         opencamServerThread = new Thread(() -> {
+            LocalServerSocket server = null;
             try {
-                opencamServerSocket = new LocalServerSocket(opencamSocketName());
+                server = new LocalServerSocket(opencamSocketName());
+                opencamServerSocket = server;
                 while (opencamBridgeRunning) {
-                    LocalSocket socket = opencamServerSocket.accept();
+                    LocalSocket socket = server.accept();
                     handleOpencamClient(socket);
                 }
             } catch (IOException error) {
                 if (opencamBridgeRunning) Log.w("AndroPyOpenCam", "bridge stopped", error);
+            } finally {
+                try {
+                    if (server != null) server.close();
+                } catch (IOException ignored) {
+                }
+                opencamServerSocket = null;
+                opencamBridgeRunning = false;
+                opencamServerThread = null;
             }
         }, "AndroPy-opencam-bridge");
         opencamServerThread.start();
@@ -4942,9 +5263,17 @@ public class MainActivity extends Activity {
 
     private void stopOpencamBridge() {
         opencamBridgeRunning = false;
+        Thread thread = opencamServerThread;
         try {
             if (opencamServerSocket != null) opencamServerSocket.close();
         } catch (IOException ignored) {
+        }
+        if (thread != null && thread != Thread.currentThread()) {
+            try {
+                thread.join(120);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
         opencamServerSocket = null;
         opencamServerThread = null;
@@ -4954,28 +5283,56 @@ public class MainActivity extends Activity {
         return "andropy_display_" + getPackageName();
     }
 
+    private String aquaWaylandSocketName() {
+        return "aqua-wayland-" + getPackageName();
+    }
+
     private void startAquaDisplayBridge() {
-        if (aquaDisplayBridgeRunning) return;
+        if (aquaDisplayBridgeRunning && aquaDisplayServerSocket != null) return;
+        if (aquaDisplayBridgeRunning && aquaDisplayServerThread != null && aquaDisplayServerThread.isAlive()) return;
         aquaDisplayBridgeRunning = true;
         aquaDisplayServerThread = new Thread(() -> {
+            LocalServerSocket server = null;
             try {
-                aquaDisplayServerSocket = new LocalServerSocket(aquaDisplaySocketName());
+                server = new LocalServerSocket(aquaDisplaySocketName());
+                aquaDisplayServerSocket = server;
                 while (aquaDisplayBridgeRunning) {
-                    LocalSocket socket = aquaDisplayServerSocket.accept();
+                    LocalSocket socket = server.accept();
                     handleAquaDisplayClient(socket);
                 }
             } catch (IOException error) {
                 if (aquaDisplayBridgeRunning) Log.w("AndroPyDisplay", "bridge stopped", error);
+            } finally {
+                try {
+                    if (server != null) server.close();
+                } catch (IOException ignored) {
+                }
+                aquaDisplayServerSocket = null;
+                aquaDisplayBridgeRunning = false;
+                aquaDisplayServerThread = null;
             }
         }, "AndroPy-display-bridge");
         aquaDisplayServerThread.start();
     }
 
+    private void restartAquaDisplayBridge() {
+        stopAquaDisplayBridge();
+        startAquaDisplayBridge();
+    }
+
     private void stopAquaDisplayBridge() {
         aquaDisplayBridgeRunning = false;
+        Thread thread = aquaDisplayServerThread;
         try {
             if (aquaDisplayServerSocket != null) aquaDisplayServerSocket.close();
         } catch (IOException ignored) {
+        }
+        if (thread != null && thread != Thread.currentThread()) {
+            try {
+                thread.join(120);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
         aquaDisplayServerSocket = null;
         aquaDisplayServerThread = null;
@@ -4996,15 +5353,71 @@ public class MainActivity extends Activity {
             if ("PING".equals(command)) {
                 output.write(("OK display socket=" + aquaDisplaySocketName() + "\n").getBytes(StandardCharsets.UTF_8));
             } else if ("CLOSE".equals(command)) {
-                runOnUiThread(this::showEditor);
+                runOnUiThread(this::closeAquaDisplayBuffer);
                 output.write("OK close\n".getBytes(StandardCharsets.UTF_8));
             } else if ("FRAME".equals(command)) {
                 handleAquaDisplayFrame(parts, input, output);
+            } else if ("SCENE".equals(command)) {
+                handleAquaDisplayScene(parts, input, output);
+            } else if ("SCENEPATCH".equals(command)) {
+                handleAquaDisplayScenePatch(parts, input, output);
+            } else if ("WAYLAND".equals(command)) {
+                handleAquaWayland(parts, output);
+            } else if ("POLLEVENTS".equals(command)) {
+                handleAquaDisplayPollEvents(output);
             } else {
                 output.write(("ERR unknown display command: " + header + "\n").getBytes(StandardCharsets.UTF_8));
             }
             output.flush();
         } catch (IOException ignored) {
+        }
+    }
+
+    private void handleAquaDisplayPollEvents(OutputStream output) throws IOException {
+        JSONArray events = new JSONArray();
+        synchronized (aquaDisplayInputLock) {
+            for (JSONObject event : aquaDisplayInputEvents) events.put(event);
+            aquaDisplayInputEvents.clear();
+        }
+        output.write(("OK " + events + "\n").getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void enqueueAquaDisplayWidgetTap(String widgetPath) {
+        if (widgetPath == null || widgetPath.trim().isEmpty()) return;
+        enqueueAquaDisplayEvent("tap", widgetPath, null, null);
+    }
+
+    private void enqueueAquaDisplayTouch(String action, String widgetPath, float sceneX, float sceneY) {
+        synchronized (aquaDisplayInputLock) {
+            JSONObject event = new JSONObject();
+            try {
+                event.put("type", "touch");
+                event.put("action", action);
+                if (widgetPath != null && !widgetPath.trim().isEmpty()) event.put("widget", widgetPath);
+                event.put("x", Math.round(sceneX));
+                event.put("y", Math.round(sceneY));
+                event.put("time", SystemClock.uptimeMillis());
+                aquaDisplayInputEvents.add(event);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void enqueueAquaDisplayKey(String keyName, String text) {
+        enqueueAquaDisplayEvent("key", null, keyName, text);
+    }
+
+    private void enqueueAquaDisplayEvent(String type, String widgetPath, String keyName, String text) {
+        synchronized (aquaDisplayInputLock) {
+            JSONObject event = new JSONObject();
+            try {
+                event.put("type", type);
+                if (widgetPath != null && !widgetPath.trim().isEmpty()) event.put("widget", widgetPath);
+                if (keyName != null && !keyName.trim().isEmpty()) event.put("key", keyName);
+                if (text != null && !text.isEmpty()) event.put("text", text);
+                aquaDisplayInputEvents.add(event);
+            } catch (Exception ignored) {
+            }
         }
     }
 
@@ -5029,11 +5442,110 @@ public class MainActivity extends Activity {
             return;
         }
         byte[] rgba = readFully(input, byteCount);
+        aquaDisplayAcceptingFrames = true;
         String title = parts.length >= 5 ? parts[4].trim() : "";
         if (title.isEmpty()) title = "Aqua display";
         final String cleanTitle = title;
         runOnUiThread(() -> showAquaDisplayFrame(width, height, rgba, cleanTitle));
         output.write(("OK frame " + width + " " + height + "\n").getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void handleAquaDisplayScene(String[] parts, InputStream input, OutputStream output) throws IOException {
+        if (parts.length < 2) {
+            output.write("ERR scene-header\n".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        int byteCount;
+        try {
+            byteCount = Integer.parseInt(parts[1]);
+        } catch (NumberFormatException error) {
+            output.write("ERR scene-size\n".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        if (byteCount <= 0 || byteCount > 4 * 1024 * 1024) {
+            output.write("ERR scene-dimensions\n".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        byte[] sceneBytes = readFully(input, byteCount);
+        try {
+            JSONObject scene = new JSONObject(new String(sceneBytes, StandardCharsets.UTF_8));
+            long sessionMs = scene.optLong("_andropy_session_ms", 0L);
+            if (!acceptAquaDisplaySession(sessionMs)) {
+                output.write(("OK stale-scene " + scene.optInt("width", 0) + " " + scene.optInt("height", 0) + "\n").getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            String title = scene.optString("title", "Aqua display").trim();
+            if (title.isEmpty()) title = "Aqua display";
+            final String cleanTitle = title;
+            runOnUiThread(() -> showAquaDisplayScene(scene, cleanTitle));
+            output.write(("OK scene " + scene.optInt("width", 0) + " " + scene.optInt("height", 0) + "\n").getBytes(StandardCharsets.UTF_8));
+        } catch (Exception error) {
+            Log.w("AndroPyDisplay", "SCENE rejected", error);
+            output.write(("ERR scene-json " + error.getClass().getSimpleName() + "\n").getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private void handleAquaDisplayScenePatch(String[] parts, InputStream input, OutputStream output) throws IOException {
+        if (parts.length < 2) {
+            output.write("ERR scenepatch-header\n".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        int byteCount;
+        try {
+            byteCount = Integer.parseInt(parts[1]);
+        } catch (NumberFormatException error) {
+            output.write("ERR scenepatch-size\n".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        if (byteCount <= 0 || byteCount > 1024 * 1024) {
+            output.write("ERR scenepatch-dimensions\n".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        byte[] sceneBytes = readFully(input, byteCount);
+        try {
+            JSONObject patch = new JSONObject(new String(sceneBytes, StandardCharsets.UTF_8));
+            long sessionMs = patch.optLong("_andropy_session_ms", 0L);
+            if (!acceptAquaDisplaySession(sessionMs)) {
+                output.write(("OK stale-scenepatch " + patch.optInt("base_ops", 0) + "\n").getBytes(StandardCharsets.UTF_8));
+                return;
+            }
+            String title = patch.optString("title", "Aqua display").trim();
+            if (title.isEmpty()) title = "Aqua display";
+            final String cleanTitle = title;
+            runOnUiThread(() -> showAquaDisplayScenePatch(patch, cleanTitle));
+            output.write(("OK scenepatch " + patch.optInt("base_ops", 0) + " +"
+                    + Math.max(0, patch.optJSONArray("ops") == null ? 0 : patch.optJSONArray("ops").length()) + "\n")
+                    .getBytes(StandardCharsets.UTF_8));
+        } catch (Exception error) {
+            Log.w("AndroPyDisplay", "SCENEPATCH rejected", error);
+            output.write(("ERR scenepatch-json " + error.getClass().getSimpleName() + "\n").getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private void handleAquaWayland(String[] parts, OutputStream output) throws IOException {
+        String title = parts.length >= 2 ? headerTail(parts, 1) : "Aqua Wayland";
+        if (title == null || title.trim().isEmpty()) title = "Aqua Wayland";
+        final String cleanTitle = title.trim();
+        aquaDisplayAcceptingFrames = true;
+        runOnUiThread(() -> showAquaWaylandHost(cleanTitle));
+        output.write(("OK wayland host=" + aquaWaylandSocketName() + "\n").getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String headerTail(String[] parts, int start) {
+        StringBuilder builder = new StringBuilder();
+        for (int i = start; i < parts.length; i++) {
+            if (i > start) builder.append(' ');
+            builder.append(parts[i]);
+        }
+        return builder.toString();
+    }
+
+    private boolean acceptAquaDisplaySession(long sessionMs) {
+        if (!aquaDisplayAcceptingFrames) return false;
+        if (sessionMs <= 0L) return aquaDisplayActiveSessionMs <= 0L;
+        if (sessionMs < aquaDisplayActiveSessionMs) return false;
+        aquaDisplayActiveSessionMs = sessionMs;
+        return true;
     }
 
     private String readSocketLine(InputStream input) throws IOException {
@@ -5149,6 +5661,16 @@ public class MainActivity extends Activity {
 
     private boolean hasCameraPermission() {
         return Build.VERSION.SDK_INT < 23 || checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void ensureStorageAccessPermission() {
+        if (Build.VERSION.SDK_INT >= 23 && Build.VERSION.SDK_INT < 33
+                && checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{
+                    Manifest.permission.READ_EXTERNAL_STORAGE,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE
+            }, 4206);
+        }
     }
 
     private void ensureOpencamCamera() {
@@ -5328,10 +5850,17 @@ public class MainActivity extends Activity {
     private void showOpencamBuffer() {
         opencamVisible = true;
         aquaDisplayVisible = false;
+        aquaDisplayView = null;
+        aquaDisplaySceneView = null;
+        aquaDisplayInputProxy = null;
+        aquaDisplayStatusText = null;
+        aquaDisplayTitleText = null;
         terminalVisible = false;
         fileManagerVisible = false;
         settingsVisible = false;
-        stopTerminal();
+        if (!terminalReturnToEditorOnExit) {
+            stopTerminal();
+        }
         setContentView(buildOpencamBufferScreen());
     }
 
@@ -5416,15 +5945,367 @@ public class MainActivity extends Activity {
             buildAquaDisplayScreen(title);
         }
         aquaDisplayFrameCounter++;
+        updateAquaDisplayFps();
         aquaDisplayFrameWidth = width;
         aquaDisplayFrameHeight = height;
         aquaDisplayTitle = title == null || title.trim().isEmpty() ? "Aqua display" : title.trim();
+        if (aquaDisplayTitleText != null) aquaDisplayTitleText.setText(aquaDisplayTitle);
         aquaDisplayView.setContentDescription(aquaDisplayTitle);
+        aquaDisplayView.setVisibility(View.VISIBLE);
+        if (aquaDisplayTitle.toLowerCase(Locale.US).contains("wayland")) {
+            drawAquaFpsCounterIntoFrame(width, height, rgba);
+            drawAquaKeyboardToggleIntoFrame(width, height, rgba);
+        }
+        if (aquaWaylandView != null) {
+            aquaWaylandView.stop();
+            aquaWaylandView.setVisibility(View.GONE);
+        }
+        if (aquaDisplaySceneView != null) aquaDisplaySceneView.setVisibility(View.GONE);
         aquaDisplayView.presentFrame(width, height, rgba);
+        focusAquaDisplaySceneInput();
         if (aquaDisplayStatusText != null) {
+            aquaDisplayStatusText.setVisibility(View.VISIBLE);
             aquaDisplayStatusText.setText(aquaDisplayTitle + "\nEGL  " + width + "x" + height
+                    + "  frame=" + aquaDisplayFrameCounter + "  fps=" + String.format(Locale.US, "%.1f", aquaDisplayFps));
+        }
+    }
+
+    private void updateAquaDisplayFps() {
+        long now = SystemClock.uptimeMillis();
+        if (aquaDisplayFpsWindowStartMs <= 0) {
+            aquaDisplayFpsWindowStartMs = now;
+            aquaDisplayFpsWindowFrames = 0;
+        }
+        aquaDisplayFpsWindowFrames++;
+        long elapsed = now - aquaDisplayFpsWindowStartMs;
+        if (elapsed >= 500) {
+            aquaDisplayFps = aquaDisplayFpsWindowFrames * 1000f / Math.max(1, elapsed);
+            aquaDisplayFpsWindowStartMs = now;
+            aquaDisplayFpsWindowFrames = 0;
+        }
+    }
+
+    private void drawAquaFpsCounterIntoFrame(int width, int height, byte[] rgba) {
+        if (rgba == null || width < 80 || height < 80) return;
+        String label = String.format(Locale.US, "%.1f FPS", aquaDisplayFps);
+        int scale = Math.max(2, Math.min(4, width / 360));
+        int x = Math.max(8, width / 120);
+        int y = Math.max(8, height / 170);
+        drawTinyText(rgba, width, height, x, y, label, scale, 255, 255, 255, 142);
+    }
+
+    private void drawTinyText(byte[] rgba, int width, int height, int x, int y, String text, int scale,
+                              int r, int g, int b, int a) {
+        if (text == null) return;
+        int cursor = x;
+        for (int i = 0; i < text.length(); i++) {
+            char ch = Character.toUpperCase(text.charAt(i));
+            if (ch == ' ') {
+                cursor += 4 * scale;
+                continue;
+            }
+            String[] glyph = tinyGlyph(ch);
+            if (glyph == null) {
+                cursor += 4 * scale;
+                continue;
+            }
+            for (int row = 0; row < glyph.length; row++) {
+                String line = glyph[row];
+                for (int col = 0; col < line.length(); col++) {
+                    if (line.charAt(col) == '1') {
+                        blendFilledRect(rgba, width, height,
+                                cursor + col * scale, y + row * scale,
+                                cursor + (col + 1) * scale, y + (row + 1) * scale,
+                                r, g, b, a);
+                    }
+                }
+            }
+            cursor += (glyph[0].length() + 1) * scale;
+        }
+    }
+
+    private String[] tinyGlyph(char ch) {
+        switch (ch) {
+            case '0': return new String[]{"111","101","101","101","101","101","111"};
+            case '1': return new String[]{"010","110","010","010","010","010","111"};
+            case '2': return new String[]{"111","001","001","111","100","100","111"};
+            case '3': return new String[]{"111","001","001","111","001","001","111"};
+            case '4': return new String[]{"101","101","101","111","001","001","001"};
+            case '5': return new String[]{"111","100","100","111","001","001","111"};
+            case '6': return new String[]{"111","100","100","111","101","101","111"};
+            case '7': return new String[]{"111","001","001","010","010","100","100"};
+            case '8': return new String[]{"111","101","101","111","101","101","111"};
+            case '9': return new String[]{"111","101","101","111","001","001","111"};
+            case '.': return new String[]{"0","0","0","0","0","0","1"};
+            case 'F': return new String[]{"111","100","100","111","100","100","100"};
+            case 'P': return new String[]{"110","101","101","110","100","100","100"};
+            case 'S': return new String[]{"111","100","100","111","001","001","111"};
+            default: return null;
+        }
+    }
+
+    private void drawAquaKeyboardToggleIntoFrame(int width, int height, byte[] rgba) {
+        if (rgba == null || width < 96 || height < 160) return;
+        int size = Math.max(58, Math.min(86, width / 12));
+        int right = width - Math.max(12, width / 100);
+        int bottom = height - Math.max(44, height / 55);
+        int left = right - size;
+        int top = bottom - size;
+        int pad = Math.max(10, size / 6);
+        int x1 = right - pad, y1 = bottom - pad;
+        int x2 = right - pad, y2 = top + pad;
+        int x3 = left + pad, y3 = bottom - pad;
+        int stroke = Math.max(2, size / 28);
+        blendLine(rgba, width, height, x1, y1, x2, y2, 255, 255, 255, 196, stroke);
+        blendLine(rgba, width, height, x2, y2, x3, y3, 255, 255, 255, 196, stroke);
+        blendLine(rgba, width, height, x3, y3, x1, y1, 255, 255, 255, 196, stroke);
+
+        int kLeft = left + size * 42 / 100;
+        int kTop = top + size * 49 / 100;
+        int kRight = left + size * 79 / 100;
+        int kBottom = top + size * 73 / 100;
+        blendRectStroke(rgba, width, height, kLeft, kTop, kRight, kBottom, 255, 255, 255, 214, Math.max(2, size / 34));
+        int keyW = Math.max(3, (kRight - kLeft) / 7);
+        int keyH = Math.max(2, (kBottom - kTop) / 8);
+        for (int row = 0; row < 2; row++) {
+            for (int col = 0; col < 4; col++) {
+                int x = kLeft + keyW + col * (keyW + 2);
+                int y = kTop + keyH + row * (keyH + 3);
+                blendFilledRect(rgba, width, height, x, y, x + keyW, y + keyH, 255, 255, 255, 196);
+            }
+        }
+        blendFilledRect(rgba, width, height, kLeft + keyW * 2, kBottom - keyH * 2,
+                kRight - keyW * 2, kBottom - keyH, 255, 255, 255, 196);
+    }
+
+    private void blendRectStroke(byte[] rgba, int width, int height, int left, int top, int right, int bottom,
+                                 int r, int g, int b, int a, int stroke) {
+        blendFilledRect(rgba, width, height, left, top, right, top + stroke, r, g, b, a);
+        blendFilledRect(rgba, width, height, left, bottom - stroke, right, bottom, r, g, b, a);
+        blendFilledRect(rgba, width, height, left, top, left + stroke, bottom, r, g, b, a);
+        blendFilledRect(rgba, width, height, right - stroke, top, right, bottom, r, g, b, a);
+    }
+
+    private void blendFilledRect(byte[] rgba, int width, int height, int left, int top, int right, int bottom,
+                                 int r, int g, int b, int a) {
+        left = Math.max(0, Math.min(width, left));
+        right = Math.max(0, Math.min(width, right));
+        top = Math.max(0, Math.min(height, top));
+        bottom = Math.max(0, Math.min(height, bottom));
+        for (int y = top; y < bottom; y++) {
+            for (int x = left; x < right; x++) blendPixel(rgba, width, height, x, y, r, g, b, a);
+        }
+    }
+
+    private void blendLine(byte[] rgba, int width, int height, int x0, int y0, int x1, int y1,
+                           int r, int g, int b, int a, int stroke) {
+        int dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+        int dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+        int err = dx + dy;
+        int radius = Math.max(1, stroke / 2);
+        while (true) {
+            blendFilledRect(rgba, width, height, x0 - radius, y0 - radius, x0 + radius + 1, y0 + radius + 1, r, g, b, a);
+            if (x0 == x1 && y0 == y1) break;
+            int e2 = 2 * err;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+        }
+    }
+
+    private void blendPixel(byte[] rgba, int width, int height, int x, int y, int r, int g, int b, int a) {
+        if (x < 0 || y < 0 || x >= width || y >= height) return;
+        int i = (y * width + x) * 4;
+        int inv = 255 - a;
+        rgba[i] = (byte) ((r * a + (rgba[i] & 0xff) * inv) / 255);
+        rgba[i + 1] = (byte) ((g * a + (rgba[i + 1] & 0xff) * inv) / 255);
+        rgba[i + 2] = (byte) ((b * a + (rgba[i + 2] & 0xff) * inv) / 255);
+        rgba[i + 3] = (byte) 255;
+    }
+
+    private void showAquaDisplayScene(JSONObject scene, String title) {
+        if (!aquaDisplayVisible || aquaDisplaySceneView == null || aquaDisplaySceneView.getParent() == null) {
+            buildAquaDisplayScreen(title);
+        }
+        aquaDisplayFrameCounter++;
+        aquaDisplayFrameWidth = Math.max(1, scene.optInt("width", 720));
+        aquaDisplayFrameHeight = Math.max(1, scene.optInt("height", 480));
+        aquaDisplayTitle = title == null || title.trim().isEmpty() ? "Aqua display" : title.trim();
+        if (aquaDisplayTitleText != null) aquaDisplayTitleText.setText(aquaDisplayTitle);
+        if (aquaDisplayView != null) aquaDisplayView.setVisibility(View.GONE);
+        if (aquaWaylandView != null) {
+            aquaWaylandView.stop();
+            aquaWaylandView.setVisibility(View.GONE);
+        }
+        aquaDisplaySceneView.setVisibility(View.VISIBLE);
+        aquaDisplaySceneView.setContentDescription(aquaDisplayTitle);
+        final AquaDisplaySceneView targetView = aquaDisplaySceneView;
+        presentAquaSceneWhenReady(targetView, scene, 0);
+        focusAquaDisplaySceneInput();
+        if (aquaDisplayStatusText != null) {
+            aquaDisplayStatusText.setVisibility(View.GONE);
+            aquaDisplayStatusText.setText(aquaDisplayTitle + "\nAndroid Canvas  " + aquaDisplayFrameWidth + "x" + aquaDisplayFrameHeight
                     + "  frame=" + aquaDisplayFrameCounter);
         }
+    }
+
+    private void presentAquaSceneWhenReady(AquaDisplaySceneView targetView, JSONObject scene, int attempt) {
+        if (targetView == null) return;
+        targetView.postDelayed(() -> {
+            if (targetView.getWidth() <= 0 || targetView.getHeight() <= 0) {
+                targetView.requestLayout();
+                if (attempt < 20) {
+                    presentAquaSceneWhenReady(targetView, scene, attempt + 1);
+                    return;
+                }
+            }
+            targetView.setScene(scene);
+            targetView.invalidate();
+        }, attempt == 0 ? 0 : 32);
+    }
+
+    private void showAquaDisplayScenePatch(JSONObject patch, String title) {
+        if (!aquaDisplayVisible || aquaDisplaySceneView == null || aquaDisplaySceneView.getParent() == null
+                || !aquaDisplaySceneView.applyScenePatch(patch)) {
+            return;
+        }
+        aquaDisplayFrameCounter++;
+        aquaDisplayFrameWidth = Math.max(1, patch.optInt("width", aquaDisplayFrameWidth));
+        aquaDisplayFrameHeight = Math.max(1, patch.optInt("height", aquaDisplayFrameHeight));
+        aquaDisplayTitle = title == null || title.trim().isEmpty() ? "Aqua display" : title.trim();
+        if (aquaDisplayTitleText != null) aquaDisplayTitleText.setText(aquaDisplayTitle);
+        if (aquaDisplayView != null) aquaDisplayView.setVisibility(View.GONE);
+        if (aquaWaylandView != null) {
+            aquaWaylandView.stop();
+            aquaWaylandView.setVisibility(View.GONE);
+        }
+        aquaDisplaySceneView.setVisibility(View.VISIBLE);
+        aquaDisplaySceneView.setContentDescription(aquaDisplayTitle);
+        focusAquaDisplaySceneInput();
+        if (aquaDisplayStatusText != null) {
+            aquaDisplayStatusText.setVisibility(View.GONE);
+        }
+    }
+
+    private void focusAquaDisplaySceneInput() {
+        if (aquaDisplaySceneView == null) return;
+        focusAquaDisplaySceneInputNow();
+        aquaDisplaySceneView.postDelayed(this::focusAquaDisplaySceneInputNow, 40);
+        aquaDisplaySceneView.postDelayed(this::focusAquaDisplaySceneInputNow, 160);
+    }
+
+    private void focusAquaDisplaySceneInputNow() {
+        if (!aquaDisplayVisible || (aquaDisplaySceneView == null && aquaDisplayView == null)) return;
+        View decor = getWindow().getDecorView();
+        View visibleDisplay = aquaWaylandView != null && aquaWaylandView.getVisibility() == View.VISIBLE
+                ? aquaWaylandView
+                : aquaDisplaySceneView != null && aquaDisplaySceneView.getVisibility() == View.VISIBLE
+                ? aquaDisplaySceneView : aquaDisplayView;
+        if (decor != null && decor != visibleDisplay) {
+            decor.setFocusable(false);
+            decor.setFocusableInTouchMode(false);
+        }
+        if (visibleDisplay != null) {
+            visibleDisplay.setFocusable(true);
+            visibleDisplay.setFocusableInTouchMode(true);
+            visibleDisplay.requestFocusFromTouch();
+            visibleDisplay.requestFocus();
+        }
+        if (aquaDisplayInputProxy != null && aquaDisplayKeyboardRequested) {
+            aquaDisplayInputProxy.setEnabled(true);
+            aquaDisplayInputProxy.setFocusable(true);
+            aquaDisplayInputProxy.setFocusableInTouchMode(true);
+            aquaDisplayInputProxy.requestFocusFromTouch();
+            aquaDisplayInputProxy.requestFocus();
+        } else if (aquaDisplayInputProxy != null) {
+            aquaDisplayInputProxy.setShowSoftInputOnFocus(false);
+            aquaDisplayInputProxy.setFocusable(false);
+            aquaDisplayInputProxy.setFocusableInTouchMode(false);
+            aquaDisplayInputProxy.clearFocus();
+        }
+        InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (imm != null && aquaDisplayKeyboardRequested) {
+            imm.restartInput(aquaDisplayInputProxy != null ? aquaDisplayInputProxy : aquaDisplaySceneView);
+        }
+    }
+
+    private void showAquaDisplayKeyboard() {
+        if (aquaDisplaySceneView == null || !aquaDisplayVisible) return;
+        aquaDisplayKeyboardRequested = true;
+        if (aquaDisplayInputProxy != null) {
+            aquaDisplayInputProxy.setEnabled(true);
+            aquaDisplayInputProxy.setFocusable(true);
+            aquaDisplayInputProxy.setFocusableInTouchMode(true);
+            aquaDisplayInputProxy.setShowSoftInputOnFocus(true);
+        }
+        focusAquaDisplaySceneInputNow();
+        aquaDisplaySceneView.postDelayed(() -> {
+            if (aquaDisplaySceneView == null || !aquaDisplayVisible) return;
+            InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (imm != null) {
+                View inputTarget = aquaDisplayInputProxy != null ? aquaDisplayInputProxy : aquaDisplaySceneView;
+                imm.showSoftInput(inputTarget, InputMethodManager.SHOW_IMPLICIT);
+            }
+        }, 40);
+    }
+
+    private void hideAquaDisplayKeyboard() {
+        aquaDisplayKeyboardRequested = false;
+        InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        View focused = getCurrentFocus();
+        if (imm != null) {
+            if (aquaDisplayInputProxy != null) {
+                imm.hideSoftInputFromWindow(aquaDisplayInputProxy.getWindowToken(), 0);
+            }
+            if (focused != null) {
+                imm.hideSoftInputFromWindow(focused.getWindowToken(), 0);
+            }
+        }
+        if (aquaDisplayInputProxy != null) {
+            aquaDisplayInputProxy.setShowSoftInputOnFocus(false);
+            aquaDisplayInputProxy.clearFocus();
+            aquaDisplayInputProxy.setFocusable(false);
+            aquaDisplayInputProxy.setFocusableInTouchMode(false);
+            aquaDisplayInputProxy.setEnabled(false);
+        }
+        if (aquaDisplaySceneView != null) aquaDisplaySceneView.clearFocus();
+    }
+
+    private void toggleAquaDisplayKeyboard() {
+        if (aquaDisplayKeyboardRequested) {
+            hideAquaDisplayKeyboard();
+        } else {
+            showAquaDisplayKeyboard();
+        }
+    }
+
+    private void closeAquaDisplayBuffer() {
+        aquaDisplayAcceptingFrames = false;
+        aquaDisplayActiveSessionMs = Long.MAX_VALUE;
+        synchronized (aquaDisplayInputLock) {
+            aquaDisplayInputEvents.clear();
+        }
+        if (aquaWaylandView != null) aquaWaylandView.stop();
+        stopCurrentRunProcesses();
+        showEditor();
+    }
+
+    private void stopCurrentRunProcesses() {
+        stopTerminal();
+        new Thread(() -> {
+            String python = new File(prefixRealRoot, "bin/python").getAbsolutePath();
+            String runner = new File(homeRealRoot, ".andropy-run-current.sh").getAbsolutePath();
+            String script = "pkill -f " + shellQuote(runner) + " 2>/dev/null || true\n"
+                    + "pkill -f " + shellQuote(python) + " 2>/dev/null || true\n"
+                    + "for pid in $(pidof python 2>/dev/null); do kill \"$pid\" 2>/dev/null || true; done\n"
+                    + "for pid in $(pidof sh 2>/dev/null); do "
+                    + "cmd=$(tr '\\0' ' ' < /proc/$pid/cmdline 2>/dev/null); "
+                    + "case \"$cmd\" in *'.andropy-run-current.sh'*) kill \"$pid\" 2>/dev/null || true ;; esac; "
+                    + "done\n";
+            try {
+                new ProcessBuilder("/system/bin/sh", "-c", script).start();
+            } catch (IOException ignored) {
+            }
+        }, "AndroPy-stop-run").start();
     }
 
     private void buildAquaDisplayScreen(String title) {
@@ -5433,46 +6314,162 @@ public class MainActivity extends Activity {
         terminalVisible = false;
         fileManagerVisible = false;
         settingsVisible = false;
-        stopTerminal();
         stopOpencamCamera();
 
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
+        FrameLayout root = new FrameLayout(this);
+        root.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         root.setBackgroundColor(Color.rgb(16, 18, 22));
+        root.setFocusable(false);
+        root.setFocusableInTouchMode(false);
 
-        LinearLayout topBar = new LinearLayout(this);
-        topBar.setOrientation(LinearLayout.HORIZONTAL);
-        topBar.setGravity(Gravity.CENTER_VERTICAL);
-        topBar.setPadding(dp(10), 0, dp(12), 0);
-        topBar.setBackgroundColor(BAR);
-
-        ImageButton back = new ImageButton(this);
-        back.setImageResource(getResources().getIdentifier("ic_arrow_back_24", "drawable", getPackageName()));
-        back.setColorFilter(MUTED);
-        back.setBackgroundColor(BAR);
-        back.setContentDescription("Editor");
-        back.setPadding(dp(7), dp(7), dp(7), dp(7));
-        back.setOnClickListener(v -> showEditor());
-        topBar.addView(back, new LinearLayout.LayoutParams(dp(34), dp(34)));
-
-        TextView titleView = new TextView(this);
-        titleView.setText(title == null || title.trim().isEmpty() ? "Aqua display" : title.trim());
-        titleView.setTextColor(TEXT);
-        titleView.setTextSize(15);
-        titleView.setGravity(Gravity.CENTER_VERTICAL);
-        titleView.setPadding(dp(12), 0, 0, 0);
-        topBar.addView(titleView, new LinearLayout.LayoutParams(0, dp(48), 1));
-        root.addView(topBar, new LinearLayout.LayoutParams(-1, dp(48)));
-
-        View yellowDivider = new View(this);
-        yellowDivider.setBackgroundColor(YELLOW_DIVIDER);
-        root.addView(yellowDivider, new LinearLayout.LayoutParams(-1, dp(2)));
+        aquaDisplayTitleText = new TextView(this);
+        aquaDisplayTitleText.setText(title == null || title.trim().isEmpty() ? "Aqua display" : title.trim());
+        aquaDisplayTitleText.setVisibility(View.GONE);
 
         FrameLayout canvas = new FrameLayout(this);
+        canvas.setLayoutParams(new FrameLayout.LayoutParams(-1, -1));
         canvas.setBackgroundColor(Color.rgb(7, 9, 13));
+        canvas.setFocusable(false);
+        canvas.setFocusableInTouchMode(false);
         aquaDisplayView = new AquaDisplayEglView(this);
         aquaDisplayView.setBackgroundColor(Color.rgb(7, 9, 13));
+        aquaDisplayView.setClickable(true);
+        aquaDisplayView.setFocusable(true);
+        aquaDisplayView.setFocusableInTouchMode(true);
+        aquaDisplayView.setOnTouchListener((view, event) -> {
+            if (!aquaDisplayVisible) return false;
+            if (!aquaDisplayKeyboardRequested) hideAquaDisplayKeyboard();
+            int frameWidth = Math.max(1, aquaDisplayFrameWidth);
+            int frameHeight = Math.max(1, aquaDisplayFrameHeight);
+            float sceneX = event.getX() * frameWidth / Math.max(1f, view.getWidth());
+            float sceneY = event.getY() * frameHeight / Math.max(1f, view.getHeight());
+            String action;
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    action = "down";
+                    break;
+                case MotionEvent.ACTION_MOVE:
+                    int history = event.getHistorySize();
+                    for (int i = 0; i < history; i++) {
+                        float hx = event.getHistoricalX(i) * frameWidth / Math.max(1f, view.getWidth());
+                        float hy = event.getHistoricalY(i) * frameHeight / Math.max(1f, view.getHeight());
+                        enqueueAquaDisplayTouch("move", null, hx, hy);
+                    }
+                    action = "move";
+                    break;
+                case MotionEvent.ACTION_UP:
+                    action = "up";
+                    break;
+                case MotionEvent.ACTION_CANCEL:
+                    action = "cancel";
+                    break;
+                default:
+                    return true;
+            }
+            enqueueAquaDisplayTouch(action, null, sceneX, sceneY);
+            return true;
+        });
         canvas.addView(aquaDisplayView, new FrameLayout.LayoutParams(-1, -1));
+        aquaWaylandView = new AquaWaylandSurfaceView(this);
+        aquaWaylandView.setBackgroundColor(Color.rgb(7, 9, 13));
+        aquaWaylandView.setClickable(true);
+        aquaWaylandView.setFocusable(true);
+        aquaWaylandView.setFocusableInTouchMode(true);
+        aquaWaylandView.setVisibility(View.GONE);
+        aquaWaylandView.setOnTouchListener((view, event) -> {
+            if (!aquaDisplayVisible) return false;
+            if (!aquaDisplayKeyboardRequested) hideAquaDisplayKeyboard();
+            String action;
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    action = "down";
+                    break;
+                case MotionEvent.ACTION_MOVE:
+                    int history = event.getHistorySize();
+                    for (int i = 0; i < history; i++) {
+                        enqueueAquaDisplayTouch("move", null, event.getHistoricalX(i), event.getHistoricalY(i));
+                    }
+                    action = "move";
+                    break;
+                case MotionEvent.ACTION_UP:
+                    action = "up";
+                    break;
+                case MotionEvent.ACTION_CANCEL:
+                    action = "cancel";
+                    break;
+                default:
+                    return true;
+            }
+            enqueueAquaDisplayTouch(action, null, event.getX(), event.getY());
+            return true;
+        });
+        canvas.addView(aquaWaylandView, new FrameLayout.LayoutParams(-1, -1));
+        aquaDisplaySceneView = new AquaDisplaySceneView(this, new AquaDisplayEventSink() {
+            @Override
+            public void onWidgetTap(String widgetPath) {
+                enqueueAquaDisplayWidgetTap(widgetPath);
+            }
+
+            @Override
+            public void onKeyInput(String keyName, String text) {
+                enqueueAquaDisplayKey(keyName, text);
+            }
+
+            @Override
+            public void onTouchInput(String action, String widgetPath, float sceneX, float sceneY) {
+                enqueueAquaDisplayTouch(action, widgetPath, sceneX, sceneY);
+            }
+        });
+        aquaDisplaySceneView.setBackgroundColor(Color.rgb(7, 9, 13));
+        aquaDisplaySceneView.setMinimumWidth(Math.max(1, getResources().getDisplayMetrics().widthPixels));
+        aquaDisplaySceneView.setMinimumHeight(Math.max(1, getResources().getDisplayMetrics().heightPixels));
+        aquaDisplaySceneView.setFocusable(true);
+        aquaDisplaySceneView.setFocusableInTouchMode(true);
+        aquaDisplaySceneView.setVisibility(View.GONE);
+        canvas.addView(aquaDisplaySceneView, new FrameLayout.LayoutParams(-1, -1));
+
+        aquaDisplayInputProxy = new EditText(this);
+        aquaDisplayInputProxy.setSingleLine(false);
+        aquaDisplayInputProxy.setTextColor(Color.TRANSPARENT);
+        aquaDisplayInputProxy.setCursorVisible(false);
+        aquaDisplayInputProxy.setAlpha(0.02f);
+        aquaDisplayInputProxy.setBackgroundColor(Color.TRANSPARENT);
+        aquaDisplayInputProxy.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        aquaDisplayInputProxy.setShowSoftInputOnFocus(false);
+        aquaDisplayInputProxy.setFocusable(false);
+        aquaDisplayInputProxy.setFocusableInTouchMode(false);
+        aquaDisplayInputProxy.setClickable(false);
+        aquaDisplayInputProxy.setLongClickable(false);
+        aquaDisplayInputProxy.setEnabled(false);
+        aquaDisplayInputProxy.setOnKeyListener((v, keyCode, event) -> {
+            if (event == null || event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            String keyName = aquaDisplayKeyNameFor(keyCode);
+            if (keyName != null) {
+                enqueueAquaDisplayKey(keyName, "");
+                return true;
+            }
+            return false;
+        });
+        aquaDisplayInputProxy.addTextChangedListener(new TextWatcher() {
+            private boolean clearing;
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable s) {
+                if (clearing || s == null || s.length() == 0) return;
+                String text = s.toString();
+                clearing = true;
+                s.clear();
+                clearing = false;
+                enqueueAquaDisplayKey("TEXT", text);
+            }
+        });
+        int proxySize = Math.max(1, dp(1));
+        FrameLayout.LayoutParams proxyParams = new FrameLayout.LayoutParams(proxySize, proxySize, Gravity.START | Gravity.TOP);
+        canvas.addView(aquaDisplayInputProxy, proxyParams);
+        aquaDisplayInputProxy.setTranslationZ(0f);
+        aquaDisplaySceneView.setTranslationZ(1f);
 
         aquaDisplayStatusText = new TextView(this);
         aquaDisplayStatusText.setTextColor(Color.rgb(230, 236, 245));
@@ -5480,12 +6477,180 @@ public class MainActivity extends Activity {
         aquaDisplayStatusText.setTypeface(Typeface.MONOSPACE);
         aquaDisplayStatusText.setPadding(dp(14), dp(12), dp(14), dp(12));
         aquaDisplayStatusText.setBackground(rounded(Color.argb(120, 20, 24, 30), Color.argb(90, 255, 255, 255), 1, 8));
+        aquaDisplayStatusText.setVisibility(View.GONE);
         FrameLayout.LayoutParams statusParams = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.START);
         statusParams.setMargins(dp(16), dp(16), dp(16), dp(16));
         canvas.addView(aquaDisplayStatusText, statusParams);
 
-        root.addView(canvas, new LinearLayout.LayoutParams(-1, 0, 1));
+        aquaKeyboardToggleButton = new AquaKeyboardToggleView(this);
+        aquaKeyboardToggleButton.setAlpha(0.92f);
+        aquaKeyboardToggleButton.setOnClickListener(v -> toggleAquaDisplayKeyboard());
+        FrameLayout.LayoutParams keyboardParams = new FrameLayout.LayoutParams(dp(68), dp(68), Gravity.BOTTOM | Gravity.END);
+        keyboardParams.setMargins(0, 0, dp(10), dp(42));
+        canvas.addView(aquaKeyboardToggleButton, keyboardParams);
+        aquaKeyboardToggleButton.setTranslationZ(32f);
+
+        root.addView(canvas, new FrameLayout.LayoutParams(-1, -1));
         setContentView(root);
+        root.requestLayout();
+        enterAquaDisplayFullscreen();
+        focusAquaDisplaySceneInput();
+    }
+
+    private void showAquaWaylandHost(String title) {
+        if (!aquaDisplayVisible || aquaWaylandView == null || aquaWaylandView.getParent() == null) {
+            buildAquaDisplayScreen(title);
+        }
+        aquaDisplayTitle = title == null || title.trim().isEmpty() ? "Aqua Wayland" : title.trim();
+        if (aquaDisplayTitleText != null) aquaDisplayTitleText.setText(aquaDisplayTitle);
+        if (aquaDisplayView != null) aquaDisplayView.setVisibility(View.GONE);
+        if (aquaDisplaySceneView != null) aquaDisplaySceneView.setVisibility(View.GONE);
+        aquaWaylandView.setVisibility(View.VISIBLE);
+        aquaWaylandView.setContentDescription(aquaDisplayTitle);
+        aquaWaylandView.requestFocusFromTouch();
+        aquaWaylandView.requestFocus();
+        if (aquaDisplayStatusText != null) {
+            aquaDisplayStatusText.setVisibility(View.VISIBLE);
+            aquaDisplayStatusText.setText(aquaDisplayTitle + "\nWayland host socket=" + aquaWaylandSocketName()
+                    + "\n" + aquaWaylandView.status());
+        }
+        aquaWaylandView.setTranslationZ(8f);
+        aquaWaylandView.start();
+        if (aquaKeyboardToggleButton != null) {
+            aquaKeyboardToggleButton.bringToFront();
+            aquaKeyboardToggleButton.setTranslationZ(32f);
+        }
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
+                | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
+        updateAquaWaylandStatus();
+        hideAquaDisplayKeyboard();
+        aquaWaylandView.requestFocus();
+    }
+
+    private void updateAquaWaylandStatus() {
+        if (!aquaDisplayVisible || aquaWaylandView == null || aquaWaylandView.getVisibility() != View.VISIBLE) return;
+        if (aquaDisplayStatusText != null) {
+            aquaDisplayStatusText.setText(aquaDisplayTitle + "\nWayland host socket=" + aquaWaylandSocketName()
+                    + "\n" + aquaWaylandView.status());
+        }
+        aquaWaylandView.postDelayed(this::updateAquaWaylandStatus, 500);
+    }
+
+    private static final class AquaKeyboardToggleView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path triangle = new Path();
+
+        AquaKeyboardToggleView(Context context) {
+            super(context);
+            setClickable(true);
+            setFocusable(false);
+            setBackgroundColor(Color.TRANSPARENT);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float w = getWidth();
+            float h = getHeight();
+            float pad = Math.min(w, h) * 0.18f;
+            triangle.reset();
+            triangle.moveTo(w - pad, h - pad);
+            triangle.lineTo(w - pad, pad);
+            triangle.lineTo(pad, h - pad);
+            triangle.close();
+
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.argb(54, 255, 255, 255));
+            canvas.drawPath(triangle, paint);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(2f, Math.min(w, h) * 0.035f));
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+            paint.setColor(Color.argb(190, 255, 255, 255));
+            canvas.drawPath(triangle, paint);
+
+            float left = w * 0.42f;
+            float top = h * 0.48f;
+            float right = w * 0.79f;
+            float bottom = h * 0.73f;
+            paint.setColor(Color.argb(210, 255, 255, 255));
+            paint.setStrokeWidth(Math.max(1.5f, Math.min(w, h) * 0.026f));
+            canvas.drawRoundRect(left, top, right, bottom, 4f, 4f, paint);
+            float keyW = (right - left) / 4.6f;
+            float keyH = (bottom - top) / 4.2f;
+            paint.setStyle(Paint.Style.FILL);
+            for (int row = 0; row < 2; row++) {
+                for (int col = 0; col < 4; col++) {
+                    float x = left + keyW * 0.55f + col * keyW;
+                    float y = top + keyH * 0.75f + row * keyH * 1.25f;
+                    canvas.drawRoundRect(x, y, x + keyW * 0.48f, y + keyH * 0.55f, 2f, 2f, paint);
+                }
+            }
+            canvas.drawRoundRect(left + keyW, bottom - keyH * 0.85f, right - keyW, bottom - keyH * 0.35f, 2f, 2f, paint);
+        }
+    }
+
+    private void enterAquaDisplayFullscreen() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+        }
+        if (Build.VERSION.SDK_INT >= 28) {
+            WindowManager.LayoutParams attrs = getWindow().getAttributes();
+            attrs.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            getWindow().setAttributes(attrs);
+        }
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+        getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+    }
+
+    private void exitAquaDisplayFullscreen() {
+        releaseAquaDisplayInputFocus();
+        View decor = getWindow().getDecorView();
+        if (decor != null) {
+            decor.setFocusable(true);
+            decor.setFocusableInTouchMode(true);
+        }
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(true);
+        }
+        if (Build.VERSION.SDK_INT >= 28) {
+            WindowManager.LayoutParams attrs = getWindow().getAttributes();
+            attrs.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
+            getWindow().setAttributes(attrs);
+        }
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+    }
+
+    private void releaseAquaDisplayInputFocus() {
+        View focused = getCurrentFocus();
+        InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (aquaDisplayInputProxy != null) {
+            if (imm != null) {
+                imm.hideSoftInputFromWindow(aquaDisplayInputProxy.getWindowToken(), 0);
+            }
+            aquaDisplayInputProxy.setText("");
+            aquaDisplayInputProxy.clearFocus();
+            ViewParent parent = aquaDisplayInputProxy.getParent();
+            if (parent instanceof ViewGroup) {
+                ((ViewGroup) parent).removeView(aquaDisplayInputProxy);
+            }
+        }
+        if (aquaDisplaySceneView != null) {
+            if (imm != null) {
+                imm.hideSoftInputFromWindow(aquaDisplaySceneView.getWindowToken(), 0);
+                imm.restartInput(aquaDisplaySceneView);
+            }
+            aquaDisplaySceneView.clearFocus();
+        } else if (focused != null) {
+            if (imm != null) imm.hideSoftInputFromWindow(focused.getWindowToken(), 0);
+        }
     }
 
     private void applyRuntimeEnvironment(ProcessBuilder builder) {
@@ -5493,18 +6658,614 @@ public class MainActivity extends Activity {
         File realLibRoot = new File(prefixRealRoot, "lib");
         File realTmpRoot = new File(prefixRealRoot, "tmp");
         String libPath = getApplicationInfo().nativeLibraryDir + ":" + realLibRoot.getAbsolutePath();
+        DisplayMetrics displayMetrics = getResources().getDisplayMetrics();
         builder.environment().put("PREFIX", prefixRoot.getAbsolutePath());
         builder.environment().put("HOME", homeRoot.getAbsolutePath());
         builder.environment().put("ANDROPY_PREFIX_REAL", prefixRealRoot.getAbsolutePath());
         builder.environment().put("ANDROPY_HOME_REAL", homeRealRoot.getAbsolutePath());
         builder.environment().put("ANDROPY_OPENCAM_SOCKET", opencamSocketName());
         builder.environment().put("ANDROPY_DISPLAY_SOCKET", aquaDisplaySocketName());
+        builder.environment().put("ANDROPY_WAYLAND_SOCKET", aquaWaylandSocketName());
+        builder.environment().put("ANDROPY_DISPLAY_REFRESH_RATE", String.format(Locale.US, "%.2f", aquaDisplayRefreshRate()));
+        builder.environment().put("ANDROPY_DISPLAY_WIDTH", String.valueOf(Math.max(1, displayMetrics.widthPixels)));
+        builder.environment().put("ANDROPY_DISPLAY_HEIGHT", String.valueOf(Math.max(1, displayMetrics.heightPixels)));
+        builder.environment().put("ANDROPY_TK_SCALE", "3.0");
+        builder.environment().put("WAYLAND_DISPLAY", aquaWaylandSocketName());
+        builder.environment().put("XDG_RUNTIME_DIR", realTmpRoot.getAbsolutePath());
+        builder.environment().put("DISPLAY", ":0");
         builder.environment().put("PATH", realBinRoot.getAbsolutePath() + ":/system/bin:/system/xbin");
         builder.environment().put("LD_LIBRARY_PATH", libPath);
         builder.environment().put("TMPDIR", realTmpRoot.getAbsolutePath());
         builder.environment().put("TERM", "xterm-256color");
         builder.environment().put("COLORTERM", "truecolor");
         builder.environment().put("PIP_DISABLE_PIP_VERSION_CHECK", "1");
+    }
+
+    private float aquaDisplayRefreshRate() {
+        try {
+            float refreshRate;
+            if (Build.VERSION.SDK_INT >= 30 && getDisplay() != null) {
+                refreshRate = getDisplay().getRefreshRate();
+            } else {
+                refreshRate = getWindowManager().getDefaultDisplay().getRefreshRate();
+            }
+            if (Float.isFinite(refreshRate) && refreshRate >= 30f) return Math.min(240f, refreshRate);
+        } catch (Exception ignored) {
+        }
+        return 60f;
+    }
+
+    private interface AquaDisplayEventSink {
+        void onWidgetTap(String widgetPath);
+        void onKeyInput(String keyName, String text);
+        void onTouchInput(String action, String widgetPath, float sceneX, float sceneY);
+    }
+
+    private static final class AquaDisplaySceneView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
+        private final AquaDisplayEventSink eventSink;
+        private JSONObject scene;
+        private Bitmap sceneBitmap;
+        private Canvas sceneBitmapCanvas;
+        private int rasterizedOps;
+        private int rasterWidth;
+        private int rasterHeight;
+        private int rasterBackground;
+
+        AquaDisplaySceneView(Context context, AquaDisplayEventSink eventSink) {
+            super(context);
+            this.eventSink = eventSink;
+            setFocusable(true);
+            setFocusableInTouchMode(true);
+            paint.setStyle(Paint.Style.FILL);
+            textPaint.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL));
+        }
+
+        void setScene(JSONObject scene) {
+            this.scene = scene;
+            resetRasterCache();
+            invalidate();
+        }
+
+        boolean applyScenePatch(JSONObject patch) {
+            JSONObject current = scene;
+            if (current == null || patch == null) return false;
+            JSONArray currentOps = current.optJSONArray("ops");
+            JSONArray addOps = patch.optJSONArray("ops");
+            int baseOps = patch.optInt("base_ops", -1);
+            if (currentOps == null || addOps == null || baseOps != currentOps.length()) return false;
+            if (patch.optInt("width", current.optInt("width", 720)) != current.optInt("width", 720)) return false;
+            if (patch.optInt("height", current.optInt("height", 480)) != current.optInt("height", 480)) return false;
+            if (colorFromJson(patch.optJSONArray("background"), Color.rgb(26, 28, 34))
+                    != colorFromJson(current.optJSONArray("background"), Color.rgb(26, 28, 34))) {
+                return false;
+            }
+            try {
+                for (int i = 0; i < addOps.length(); i++) {
+                    currentOps.put(addOps.get(i));
+                }
+                if (patch.has("title")) current.put("title", patch.optString("title", current.optString("title", "Aqua display")));
+            } catch (Exception ignored) {
+                return false;
+            }
+            invalidate();
+            return true;
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            JSONObject current = scene;
+            if (current == null) return false;
+            float[] scenePoint = mapTouchToScene(current, event.getX(), event.getY());
+            String widget = findTouchedWidget(current, scenePoint[0], scenePoint[1], true);
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                if (getContext() instanceof MainActivity) ((MainActivity) getContext()).hideAquaDisplayKeyboard();
+                if (eventSink != null) eventSink.onTouchInput("down", widget, scenePoint[0], scenePoint[1]);
+                return true;
+            }
+            if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
+                int history = event.getHistorySize();
+                for (int i = 0; i < history; i++) {
+                    float[] historicalPoint = mapTouchToScene(current, event.getHistoricalX(i), event.getHistoricalY(i));
+                    String historicalWidget = findTouchedWidget(current, historicalPoint[0], historicalPoint[1], true);
+                    if (eventSink != null) {
+                        eventSink.onTouchInput("move", historicalWidget, historicalPoint[0], historicalPoint[1]);
+                    }
+                }
+                if (eventSink != null) eventSink.onTouchInput("move", widget, scenePoint[0], scenePoint[1]);
+                return true;
+            }
+            if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                if (getContext() instanceof MainActivity) {
+                    ((MainActivity) getContext()).focusAquaDisplaySceneInputNow();
+                }
+                if (eventSink != null) eventSink.onTouchInput("up", widget, scenePoint[0], scenePoint[1]);
+                if (widget != null && eventSink != null) {
+                    eventSink.onWidgetTap(widget);
+                    performClick();
+                    return true;
+                }
+            }
+            if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                if (eventSink != null) eventSink.onTouchInput("cancel", widget, scenePoint[0], scenePoint[1]);
+                return true;
+            }
+            return event.getActionMasked() == MotionEvent.ACTION_DOWN || super.onTouchEvent(event);
+        }
+
+        @Override
+        public boolean onCheckIsTextEditor() {
+            return true;
+        }
+
+        @Override
+        public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+            outAttrs.inputType = InputType.TYPE_CLASS_TEXT
+                    | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                    | InputType.TYPE_TEXT_FLAG_MULTI_LINE;
+            outAttrs.imeOptions = EditorInfo.IME_ACTION_NONE | EditorInfo.IME_FLAG_NO_EXTRACT_UI;
+            outAttrs.initialSelStart = 0;
+            outAttrs.initialSelEnd = 0;
+            return new BaseInputConnection(this, true) {
+                private final Editable inputBuffer = new SpannableStringBuilder();
+                private int cursor;
+                private String composingText = "";
+
+                @Override
+                public Editable getEditable() {
+                    return inputBuffer;
+                }
+
+                @Override
+                public CharSequence getTextBeforeCursor(int length, int flags) {
+                    int start = Math.max(0, cursor - Math.max(0, length));
+                    return inputBuffer.subSequence(start, cursor);
+                }
+
+                @Override
+                public CharSequence getTextAfterCursor(int length, int flags) {
+                    int end = Math.min(inputBuffer.length(), cursor + Math.max(0, length));
+                    return inputBuffer.subSequence(cursor, end);
+                }
+
+                @Override
+                public CharSequence getSelectedText(int flags) {
+                    return "";
+                }
+
+                @Override
+                public boolean setSelection(int start, int end) {
+                    cursor = Math.max(0, Math.min(inputBuffer.length(), end));
+                    return true;
+                }
+
+                @Override
+                public ExtractedText getExtractedText(ExtractedTextRequest request, int flags) {
+                    ExtractedText extracted = new ExtractedText();
+                    extracted.text = inputBuffer.toString();
+                    extracted.startOffset = 0;
+                    extracted.selectionStart = cursor;
+                    extracted.selectionEnd = cursor;
+                    return extracted;
+                }
+
+                private void appendToBuffer(CharSequence text) {
+                    if (text == null || text.length() == 0) return;
+                    inputBuffer.insert(cursor, text);
+                    cursor += text.length();
+                    if (inputBuffer.length() > 256) {
+                        int trim = inputBuffer.length() - 256;
+                        inputBuffer.delete(0, trim);
+                        cursor = Math.max(0, cursor - trim);
+                    }
+                }
+
+                private void deleteBeforeCursor(int count) {
+                    int removed = Math.min(Math.max(0, count), cursor);
+                    if (removed <= 0) return;
+                    inputBuffer.delete(cursor - removed, cursor);
+                    cursor -= removed;
+                }
+
+                @Override
+                public boolean commitText(CharSequence text, int newCursorPosition) {
+                    composingText = "";
+                    if (eventSink != null && text != null && text.length() > 0) {
+                        appendToBuffer(text);
+                        eventSink.onKeyInput("TEXT", text.toString());
+                        return true;
+                    }
+                    return super.commitText(text, newCursorPosition);
+                }
+
+                @Override
+                public boolean setComposingText(CharSequence text, int newCursorPosition) {
+                    String next = text == null ? "" : text.toString();
+                    if (eventSink != null) {
+                        if (next.startsWith(composingText)) {
+                            String added = next.substring(composingText.length());
+                            if (!added.isEmpty()) {
+                                appendToBuffer(added);
+                                eventSink.onKeyInput("TEXT", added);
+                            }
+                        } else if (composingText.startsWith(next)) {
+                            int removed = composingText.length() - next.length();
+                            deleteBeforeCursor(removed);
+                            for (int i = 0; i < removed; i++) eventSink.onKeyInput("BACKSPACE", "");
+                        } else {
+                            deleteBeforeCursor(composingText.length());
+                            for (int i = 0; i < composingText.length(); i++) eventSink.onKeyInput("BACKSPACE", "");
+                            if (!next.isEmpty()) {
+                                appendToBuffer(next);
+                                eventSink.onKeyInput("TEXT", next);
+                            }
+                        }
+                        composingText = next;
+                        return true;
+                    }
+                    composingText = next;
+                    return super.setComposingText(text, newCursorPosition);
+                }
+
+                @Override
+                public boolean finishComposingText() {
+                    composingText = "";
+                    return super.finishComposingText();
+                }
+
+                @Override
+                public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+                    composingText = "";
+                    if (eventSink != null && beforeLength > 0) {
+                        deleteBeforeCursor(beforeLength);
+                        for (int i = 0; i < beforeLength; i++) eventSink.onKeyInput("BACKSPACE", "");
+                        return true;
+                    }
+                    if (eventSink != null && afterLength > 0) {
+                        for (int i = 0; i < afterLength; i++) eventSink.onKeyInput("DELETE", "");
+                        return true;
+                    }
+                    return super.deleteSurroundingText(beforeLength, afterLength);
+                }
+
+                @Override
+                public boolean sendKeyEvent(KeyEvent event) {
+                    if (event != null && event.getAction() == KeyEvent.ACTION_DOWN
+                            && AquaDisplaySceneView.this.onKeyDown(event.getKeyCode(), event)) {
+                        return true;
+                    }
+                    return super.sendKeyEvent(event);
+                }
+            };
+        }
+
+        @Override
+        public boolean onKeyDown(int keyCode, KeyEvent event) {
+            if (eventSink == null) return super.onKeyDown(keyCode, event);
+            String keyName = keyNameFor(keyCode);
+            String text = "";
+            int unicode = event.getUnicodeChar();
+            if (unicode >= 32 && unicode != 127) {
+                text = new String(Character.toChars(unicode));
+            }
+            if (keyName == null && text.isEmpty()) return super.onKeyDown(keyCode, event);
+            eventSink.onKeyInput(keyName == null ? "TEXT" : keyName, text);
+            return true;
+        }
+
+        private String keyNameFor(int keyCode) {
+            switch (keyCode) {
+                case KeyEvent.KEYCODE_DEL:
+                    return "BACKSPACE";
+                case KeyEvent.KEYCODE_FORWARD_DEL:
+                    return "DELETE";
+                case KeyEvent.KEYCODE_ENTER:
+                case KeyEvent.KEYCODE_NUMPAD_ENTER:
+                    return "ENTER";
+                case KeyEvent.KEYCODE_SPACE:
+                    return "SPACE";
+                case KeyEvent.KEYCODE_TAB:
+                    return "TAB";
+                case KeyEvent.KEYCODE_DPAD_LEFT:
+                    return "LEFT";
+                case KeyEvent.KEYCODE_DPAD_RIGHT:
+                    return "RIGHT";
+                case KeyEvent.KEYCODE_DPAD_UP:
+                    return "UP";
+                case KeyEvent.KEYCODE_DPAD_DOWN:
+                    return "DOWN";
+                case KeyEvent.KEYCODE_ESCAPE:
+                    return "ESCAPE";
+                default:
+                    return null;
+            }
+        }
+
+        @Override
+        public boolean performClick() {
+            super.performClick();
+            return true;
+        }
+
+        private float[] mapTouchToScene(JSONObject current, float viewX, float viewY) {
+            int sceneWidth = Math.max(1, current.optInt("width", 720));
+            int sceneHeight = Math.max(1, current.optInt("height", 480));
+            float scaleX = sceneScaleX(current, sceneWidth, sceneHeight);
+            float scaleY = sceneScaleY(current, sceneWidth, sceneHeight);
+            if (!Float.isFinite(scaleX) || scaleX <= 0f) scaleX = 1f;
+            if (!Float.isFinite(scaleY) || scaleY <= 0f) scaleY = 1f;
+            float left = sceneLeft(current, sceneWidth, scaleX);
+            float top = sceneTop(current, sceneHeight, scaleY);
+            return new float[]{(viewX - left) / scaleX, (viewY - top) / scaleY};
+        }
+
+        private String findTouchedWidget(JSONObject current, float sceneX, float sceneY, boolean sceneCoordinates) {
+            JSONArray ops = current.optJSONArray("ops");
+            if (ops == null) return null;
+            for (int i = ops.length() - 1; i >= 0; i--) {
+                JSONObject op = ops.optJSONObject(i);
+                if (op == null || !op.has("widget")) continue;
+                String type = op.optString("type", "");
+                if (!"rect".equals(type) && !"oval".equals(type)) continue;
+                RectF rect = rectFromOp(op);
+                if (rect.contains(sceneX, sceneY)) return op.optString("widget", null);
+            }
+            return null;
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            JSONObject current = scene;
+            if (current == null) {
+                canvas.drawColor(Color.rgb(7, 9, 13));
+                return;
+            }
+            int sceneWidth = Math.max(1, current.optInt("width", 720));
+            int sceneHeight = Math.max(1, current.optInt("height", 480));
+            int bg = colorFromJson(current.optJSONArray("background"), Color.rgb(26, 28, 34));
+            canvas.drawColor(Color.rgb(7, 9, 13));
+            float scaleX = sceneScaleX(current, sceneWidth, sceneHeight);
+            float scaleY = sceneScaleY(current, sceneWidth, sceneHeight);
+            if (!Float.isFinite(scaleX) || scaleX <= 0f) scaleX = 1f;
+            if (!Float.isFinite(scaleY) || scaleY <= 0f) scaleY = 1f;
+            float left = sceneLeft(current, sceneWidth, scaleX);
+            float top = sceneTop(current, sceneHeight, scaleY);
+            canvas.save();
+            canvas.translate(left, top);
+            canvas.scale(scaleX, scaleY);
+            if (drawRasterScene(canvas, current, sceneWidth, sceneHeight, bg)) {
+                canvas.restore();
+                return;
+            }
+            drawSceneDirect(canvas, current, sceneWidth, sceneHeight, bg);
+            canvas.restore();
+        }
+
+        private float sceneScale(JSONObject current, int sceneWidth, int sceneHeight) {
+            float scaleX = getWidth() / (float) Math.max(1, sceneWidth);
+            float scaleY = getHeight() / (float) Math.max(1, sceneHeight);
+            if ("cover".equals(current.optString("scale_mode", "fit"))) {
+                return Math.max(scaleX, scaleY);
+            }
+            return Math.min(scaleX, scaleY);
+        }
+
+        private float sceneScaleX(JSONObject current, int sceneWidth, int sceneHeight) {
+            if ("stretch".equals(current.optString("scale_mode", "fit"))) {
+                return getWidth() / (float) Math.max(1, sceneWidth);
+            }
+            return sceneScale(current, sceneWidth, sceneHeight);
+        }
+
+        private float sceneScaleY(JSONObject current, int sceneWidth, int sceneHeight) {
+            if ("stretch".equals(current.optString("scale_mode", "fit"))) {
+                return getHeight() / (float) Math.max(1, sceneHeight);
+            }
+            return sceneScale(current, sceneWidth, sceneHeight);
+        }
+
+        private float sceneLeft(JSONObject current, int sceneWidth, float scaleX) {
+            if ("stretch".equals(current.optString("scale_mode", "fit"))) return 0f;
+            return (getWidth() - sceneWidth * scaleX) * 0.5f;
+        }
+
+        private float sceneTop(JSONObject current, int sceneHeight, float scaleY) {
+            if ("stretch".equals(current.optString("scale_mode", "fit"))) {
+                return Math.max(0f, (getHeight() - sceneHeight * scaleY) * 0.5f);
+            }
+            return (getHeight() - sceneHeight * scaleY) * 0.5f;
+        }
+
+        private boolean drawRasterScene(Canvas canvas, JSONObject current, int sceneWidth, int sceneHeight, int bg) {
+            try {
+                if (sceneBitmap == null || sceneBitmap.isRecycled()
+                        || rasterWidth != sceneWidth || rasterHeight != sceneHeight || rasterBackground != bg) {
+                    resetRasterCache();
+                    sceneBitmap = Bitmap.createBitmap(sceneWidth, sceneHeight, Bitmap.Config.ARGB_8888);
+                    sceneBitmapCanvas = new Canvas(sceneBitmap);
+                    rasterWidth = sceneWidth;
+                    rasterHeight = sceneHeight;
+                    rasterBackground = bg;
+                    sceneBitmapCanvas.drawColor(bg);
+                    rasterizedOps = 0;
+                }
+                JSONArray ops = current.optJSONArray("ops");
+                if (ops != null) {
+                    for (int i = Math.max(0, rasterizedOps); i < ops.length(); i++) {
+                        JSONObject op = ops.optJSONObject(i);
+                        if (op != null) drawSceneOp(sceneBitmapCanvas, op);
+                    }
+                    rasterizedOps = ops.length();
+                }
+                canvas.drawBitmap(sceneBitmap, 0, 0, null);
+                return true;
+            } catch (OutOfMemoryError | RuntimeException error) {
+                resetRasterCache();
+                return false;
+            }
+        }
+
+        private void drawSceneDirect(Canvas canvas, JSONObject current, int sceneWidth, int sceneHeight, int bg) {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(bg);
+            canvas.drawRect(0, 0, sceneWidth, sceneHeight, paint);
+            JSONArray ops = current.optJSONArray("ops");
+            if (ops == null) return;
+            for (int i = 0; i < ops.length(); i++) {
+                JSONObject op = ops.optJSONObject(i);
+                if (op != null) drawSceneOp(canvas, op);
+            }
+        }
+
+        private void resetRasterCache() {
+            if (sceneBitmap != null) {
+                sceneBitmap.recycle();
+            }
+            sceneBitmap = null;
+            sceneBitmapCanvas = null;
+            rasterizedOps = 0;
+            rasterWidth = 0;
+            rasterHeight = 0;
+            rasterBackground = 0;
+        }
+
+        private void drawSceneOp(Canvas canvas, JSONObject op) {
+            String type = op.optString("type", "");
+            int color = colorFromJson(op.optJSONArray("color"), Color.rgb(216, 222, 233));
+            if ("rect".equals(type)) {
+                paint.setStyle("stroke".equals(op.optString("style", "fill")) ? Paint.Style.STROKE : Paint.Style.FILL);
+                paint.setStrokeWidth((float) op.optDouble("width", 2));
+                paint.setColor(color);
+                RectF rect = rectFromOp(op);
+                float radius = (float) op.optDouble("radius", 0);
+                if (radius > 0) canvas.drawRoundRect(rect, radius, radius, paint);
+                else canvas.drawRect(rect, paint);
+            } else if ("oval".equals(type)) {
+                paint.setStyle("stroke".equals(op.optString("style", "fill")) ? Paint.Style.STROKE : Paint.Style.FILL);
+                paint.setStrokeWidth((float) op.optDouble("width", 2));
+                paint.setColor(color);
+                canvas.drawOval(rectFromOp(op), paint);
+            } else if ("line".equals(type)) {
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeCap(Paint.Cap.ROUND);
+                paint.setStrokeWidth((float) op.optDouble("width", 2));
+                paint.setColor(color);
+                canvas.drawLine((float) op.optDouble("x1", 0), (float) op.optDouble("y1", 0),
+                        (float) op.optDouble("x2", 0), (float) op.optDouble("y2", 0), paint);
+            } else if ("text".equals(type)) {
+                String text = op.optString("text", "");
+                if (text.isEmpty()) return;
+                textPaint.setColor(color);
+                textPaint.setTextSize((float) op.optDouble("size", 16));
+                textPaint.setTypeface(Typeface.create(Typeface.SANS_SERIF,
+                        op.optBoolean("bold", false) ? Typeface.BOLD : Typeface.NORMAL));
+                float x = (float) op.optDouble("x", 0);
+                float y = (float) op.optDouble("y", 0);
+                Paint.FontMetrics metrics = textPaint.getFontMetrics();
+                canvas.drawText(text, x, y - metrics.ascent, textPaint);
+            }
+        }
+
+        private RectF rectFromOp(JSONObject op) {
+            float x1 = (float) op.optDouble("x1", op.optDouble("x", 0));
+            float y1 = (float) op.optDouble("y1", op.optDouble("y", 0));
+            float x2 = (float) op.optDouble("x2", x1 + op.optDouble("w", 0));
+            float y2 = (float) op.optDouble("y2", y1 + op.optDouble("h", 0));
+            return new RectF(Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2));
+        }
+
+        private int colorFromJson(JSONArray array, int fallback) {
+            if (array == null || array.length() < 3) return fallback;
+            int r = Math.max(0, Math.min(255, array.optInt(0, 0)));
+            int g = Math.max(0, Math.min(255, array.optInt(1, 0)));
+            int b = Math.max(0, Math.min(255, array.optInt(2, 0)));
+            int a = Math.max(0, Math.min(255, array.optInt(3, 255)));
+            return Color.argb(a, r, g, b);
+        }
+    }
+
+    private static final class AquaWaylandSurfaceView extends SurfaceView implements SurfaceHolder.Callback {
+        private final Handler handler = new Handler();
+        private long nativeHandle;
+        private boolean running;
+        private int surfaceWidth = 1;
+        private int surfaceHeight = 1;
+        private final Runnable drawLoop = new Runnable() {
+            @Override
+            public void run() {
+                if (!running || nativeHandle == 0L) return;
+                nativeDraw(nativeHandle);
+                handler.postDelayed(this, 16);
+            }
+        };
+
+        AquaWaylandSurfaceView(Context context) {
+            super(context);
+            nativeHandle = nativeCreate();
+            getHolder().addCallback(this);
+            setZOrderOnTop(false);
+            getHolder().setFormat(PixelFormat.OPAQUE);
+        }
+
+        void start() {
+            if (running) return;
+            running = true;
+            handler.removeCallbacks(drawLoop);
+            handler.post(drawLoop);
+        }
+
+        void stop() {
+            running = false;
+            handler.removeCallbacks(drawLoop);
+        }
+
+        String status() {
+            return nativeHandle == 0L ? "native host not loaded" : nativeStatus(nativeHandle);
+        }
+
+        @Override
+        public void surfaceCreated(SurfaceHolder holder) {
+            surfaceWidth = Math.max(1, getWidth());
+            surfaceHeight = Math.max(1, getHeight());
+            Log.i("AquaWayland", "surfaceCreated " + surfaceWidth + "x" + surfaceHeight);
+            if (nativeHandle != 0L) nativeSurfaceCreated(nativeHandle, holder.getSurface(), surfaceWidth, surfaceHeight);
+            start();
+        }
+
+        @Override
+        public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+            surfaceWidth = Math.max(1, width);
+            surfaceHeight = Math.max(1, height);
+            Log.i("AquaWayland", "surfaceChanged " + surfaceWidth + "x" + surfaceHeight);
+            if (nativeHandle != 0L) nativeSurfaceChanged(nativeHandle, surfaceWidth, surfaceHeight);
+        }
+
+        @Override
+        public void surfaceDestroyed(SurfaceHolder holder) {
+            Log.i("AquaWayland", "surfaceDestroyed");
+            stop();
+            if (nativeHandle != 0L) nativeSurfaceDestroyed(nativeHandle);
+        }
+
+        @Override
+        protected void onDetachedFromWindow() {
+            stop();
+            if (nativeHandle != 0L) {
+                nativeDestroy(nativeHandle);
+                nativeHandle = 0L;
+            }
+            super.onDetachedFromWindow();
+        }
+
+        private native long nativeCreate();
+        private native void nativeSurfaceCreated(long handle, Surface surface, int width, int height);
+        private native void nativeSurfaceChanged(long handle, int width, int height);
+        private native void nativeDraw(long handle);
+        private native void nativeSurfaceDestroyed(long handle);
+        private native String nativeStatus(long handle);
+        private native void nativeDestroy(long handle);
     }
 
     private static final class AquaDisplayEglView extends GLSurfaceView {
@@ -5522,9 +7283,8 @@ public class MainActivity extends Activity {
         }
 
         void presentFrame(int width, int height, byte[] rgba) {
-            byte[] copy = Arrays.copyOf(rgba, rgba.length);
             queueEvent(() -> {
-                renderer.setFrame(width, height, copy);
+                renderer.setFrame(width, height, rgba);
                 requestRender();
             });
         }
@@ -5559,6 +7319,8 @@ public class MainActivity extends Activity {
         private int surfaceHeight = 1;
         private int frameWidth;
         private int frameHeight;
+        private int textureWidth;
+        private int textureHeight;
         private ByteBuffer pendingFrame;
         private boolean textureDirty;
 
@@ -5597,9 +7359,17 @@ public class MainActivity extends Activity {
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId);
                 GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
                 pendingFrame.position(0);
-                GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA,
-                        frameWidth, frameHeight, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE,
-                        pendingFrame);
+                if (textureWidth != frameWidth || textureHeight != frameHeight) {
+                    GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA,
+                            frameWidth, frameHeight, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE,
+                            pendingFrame);
+                    textureWidth = frameWidth;
+                    textureHeight = frameHeight;
+                } else {
+                    GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0,
+                            frameWidth, frameHeight, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE,
+                            pendingFrame);
+                }
                 textureDirty = false;
                 updateVertices();
             }
@@ -5622,10 +7392,12 @@ public class MainActivity extends Activity {
         void setFrame(int width, int height, byte[] rgba) {
             frameWidth = width;
             frameHeight = height;
-            ByteBuffer buffer = ByteBuffer.allocateDirect(rgba.length).order(ByteOrder.nativeOrder());
-            buffer.put(rgba);
-            buffer.position(0);
-            pendingFrame = buffer;
+            if (pendingFrame == null || pendingFrame.capacity() < rgba.length) {
+                pendingFrame = ByteBuffer.allocateDirect(rgba.length).order(ByteOrder.nativeOrder());
+            }
+            pendingFrame.clear();
+            pendingFrame.put(rgba);
+            pendingFrame.position(0);
             textureDirty = true;
         }
 
@@ -5841,6 +7613,14 @@ public class MainActivity extends Activity {
     }
 
     private void showEditor() {
+        if (aquaDisplayVisible) {
+            aquaDisplayAcceptingFrames = false;
+            aquaDisplayActiveSessionMs = Long.MAX_VALUE;
+            synchronized (aquaDisplayInputLock) {
+                aquaDisplayInputEvents.clear();
+            }
+        }
+        exitAquaDisplayFullscreen();
         if (opencamVisible) stopOpencamCamera();
         terminalVisible = false;
         fileManagerVisible = false;
@@ -5850,8 +7630,20 @@ public class MainActivity extends Activity {
         choosingProjectFolder = false;
         projectPanelOpen = false;
         terminalReturnToEditorOnExit = false;
+        terminalScreenTitle = null;
         stopTerminal();
+        aquaDisplayView = null;
+        aquaDisplaySceneView = null;
+        aquaDisplayStatusText = null;
+        aquaDisplayTitleText = null;
         setContentView(buildEditorScreen());
+        if (editor != null) {
+            editor.postDelayed(() -> {
+                editor.requestFocus();
+                InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                if (imm != null) imm.restartInput(editor);
+            }, 80);
+        }
     }
 
     private void animatePendingEditorSwitch(View target) {
@@ -5886,9 +7678,11 @@ public class MainActivity extends Activity {
         File realLibRoot = new File(prefixRealRoot, "lib");
         File realTmpRoot = new File(prefixRealRoot, "tmp");
         File realEtcRoot = new File(prefixRealRoot, "etc");
+        DisplayMetrics displayMetrics = getResources().getDisplayMetrics();
         String path = realBinRoot.getAbsolutePath() + ":/system/bin:/system/xbin";
         String startupCommand = terminalStartupCommand;
         terminalStartupCommand = null;
+        terminalScreenTitle = null;
         if (startupCommand != null && startupCommand.trim().isEmpty()) startupCommand = null;
         if (startupScript != null) {
             startupCommand = "exec sh " + shellQuote(startupScript);
@@ -5905,6 +7699,15 @@ public class MainActivity extends Activity {
                 "ANDROPY_HOME_REAL=" + homeRealRoot.getAbsolutePath(),
                 "ANDROPY_OPENCAM_SOCKET=" + opencamSocketName(),
                 "ANDROPY_DISPLAY_SOCKET=" + aquaDisplaySocketName(),
+                "ANDROPY_WAYLAND_SOCKET=" + aquaWaylandSocketName(),
+                "ANDROPY_DISPLAY_REFRESH_RATE=" + String.format(Locale.US, "%.2f", aquaDisplayRefreshRate()),
+                "ANDROPY_DISPLAY_WIDTH=" + Math.max(1, displayMetrics.widthPixels),
+                "ANDROPY_DISPLAY_HEIGHT=" + Math.max(1, displayMetrics.heightPixels),
+                "ANDROPY_TK_SCALE=3.0",
+                "EXTERNAL_STORAGE=/sdcard",
+                "WAYLAND_DISPLAY=" + aquaWaylandSocketName(),
+                "XDG_RUNTIME_DIR=" + realTmpRoot.getAbsolutePath(),
+                "DISPLAY=:0",
                 "ANDROPY_START_REAL=" + homeRealRoot.getAbsolutePath(),
                 "ANDROPY_BASH_PATH=" + packagedBash.getAbsolutePath(),
                 "PATH=" + path,
@@ -5982,6 +7785,7 @@ public class MainActivity extends Activity {
         setBootstrapProgress(0.16f, "Creating Linux directories");
         appendBootstrapOutput("$ create-directories");
         createBootstrapDirectories();
+        ensureHomeStorageLinks();
 
         homeRoot.mkdirs();
         setBootstrapProgress(0.28f, "Selecting device runtime");
@@ -6054,6 +7858,13 @@ public class MainActivity extends Activity {
             writer.write("export ANDROPY_HOME_REAL=\"" + homeRealRoot.getAbsolutePath() + "\"\n");
             writer.write("export ANDROPY_OPENCAM_SOCKET=\"" + opencamSocketName() + "\"\n");
             writer.write("export ANDROPY_DISPLAY_SOCKET=\"" + aquaDisplaySocketName() + "\"\n");
+            writer.write("export ANDROPY_WAYLAND_SOCKET=\"" + aquaWaylandSocketName() + "\"\n");
+            writer.write("export ANDROPY_DISPLAY_REFRESH_RATE=\"" + String.format(Locale.US, "%.2f", aquaDisplayRefreshRate()) + "\"\n");
+            writer.write("export ANDROPY_TK_SCALE=\"3.0\"\n");
+            writer.write("export EXTERNAL_STORAGE=\"/sdcard\"\n");
+            writer.write("export WAYLAND_DISPLAY=\"" + aquaWaylandSocketName() + "\"\n");
+            writer.write("export XDG_RUNTIME_DIR=\"$ANDROPY_PREFIX_REAL/tmp\"\n");
+            writer.write("export DISPLAY=\":0\"\n");
             writer.write("export PATH=\"$ANDROPY_PREFIX_REAL/bin:/system/bin:/system/xbin\"\n");
             writer.write("export LD_LIBRARY_PATH=\"" + getApplicationInfo().nativeLibraryDir + ":$ANDROPY_PREFIX_REAL/lib\"\n");
             writer.write("export TERMINFO=\"$ANDROPY_PREFIX_REAL/share/terminfo\"\n");
@@ -6066,6 +7877,13 @@ public class MainActivity extends Activity {
             writer.write("export LANG=\"C.UTF-8\"\n");
             writer.write("export LC_ALL=\"C.UTF-8\"\n");
             writer.write("export TMPDIR=\"$ANDROPY_PREFIX_REAL/tmp\"\n");
+            writer.write("[ -e \"$HOME/sdcard\" ] || ln -s /sdcard \"$HOME/sdcard\" 2>/dev/null || true\n");
+            writer.write("[ -e \"$HOME/storage\" ] || ln -s /sdcard \"$HOME/storage\" 2>/dev/null || true\n");
+            writer.write("[ -d \"$HOME/projects\" ] || mkdir -p \"$HOME/projects\"\n");
+            writer.write("alias ls='ls --color=auto'\n");
+            writer.write("alias ll='ls -la --color=auto'\n");
+            writer.write("alias storage='cd /sdcard'\n");
+            writer.write("alias userhome='cd /sdcard'\n");
             writer.write("[ -r \"$ANDROPY_PREFIX_REAL/etc/profile\" ] && . \"$ANDROPY_PREFIX_REAL/etc/profile\"\n");
             writer.write("cd \"$ANDROPY_HOME_REAL\" 2>/dev/null || cd \"$HOME\" 2>/dev/null\n");
             writer.write("PROMPT_COMMAND='__andropy_prompt_before; __andropy_prompt_build'\n");
@@ -6144,6 +7962,24 @@ public class MainActivity extends Activity {
         varTmpRoot.mkdirs();
         touch(new File(varLibDpkgRoot, "available"));
         touch(new File(varLibDpkgRoot, "status"));
+    }
+
+    private void ensureHomeStorageLinks() {
+        homeRoot.mkdirs();
+        homeRealRoot.mkdirs();
+        File projects = new File(homeRoot, "projects");
+        projects.mkdirs();
+        createHomeSymlink("sdcard", "/sdcard");
+        createHomeSymlink("storage", "/sdcard");
+    }
+
+    private void createHomeSymlink(String name, String target) {
+        File link = new File(homeRoot, name);
+        if (link.exists()) return;
+        try {
+            Os.symlink(target, link.getAbsolutePath());
+        } catch (ErrnoException ignored) {
+        }
     }
 
     private void deleteChildren(File directory) {
@@ -6256,9 +8092,39 @@ public class MainActivity extends Activity {
 
     private void installAquaDisplayRuntime() {
         File sitePackages = new File(prefixRoot, "lib/python3.13/site-packages");
+        File legacyPythonRoot = new File(prefixRoot, "python");
+        deleteRecursively(new File(sitePackages, "_tkinter.py"));
+        deleteChildrenWithSuffix(new File(sitePackages, "__pycache__"), ".pyc", "_tkinter.");
+        deleteRecursively(new File(legacyPythonRoot, "_tkinter.py"));
+        deleteChildrenWithSuffix(new File(legacyPythonRoot, "__pycache__"), ".pyc", "_tkinter.");
         try {
             appendBootstrapOutput("$ install-aquadisplay");
             copyAssetTree("runtime-common/python", sitePackages);
+        } catch (IOException ignored) {
+        }
+        installAquaWaylandRuntime();
+    }
+
+    private void installAquaWaylandRuntime() {
+        try {
+            String[] helpers = getAssets().list("runtime-common/bin");
+            if (helpers != null) {
+                for (String helper : helpers) {
+                    if (!helper.startsWith("aqua-")) continue;
+                    File target = new File(binRoot, helper);
+                    copyAssetTree("runtime-common/bin/" + helper, target);
+                    target.setReadable(true, false);
+                    target.setExecutable(true, false);
+                }
+            }
+        } catch (IOException ignored) {
+        }
+        try {
+            copyAssetTree("runtime-common/etc/sway", new File(prefixRoot, "etc/sway"));
+        } catch (IOException ignored) {
+        }
+        try {
+            copyAssetTree("runtime-common/share/aqua", new File(prefixRoot, "share/aqua"));
         } catch (IOException ignored) {
         }
     }
@@ -10660,10 +12526,18 @@ public class MainActivity extends Activity {
         String openedPath = prefs.getString("file_path", "");
         File script = openedPath == null || openedPath.isEmpty() ? new File(homeRoot, currentFileName()) : new File(openedPath);
         File runner = new File(homeRoot, ".andropy-run-current.sh");
+        File python = new File(prefixRoot, "bin/python");
         try {
+            aquaDisplayAcceptingFrames = true;
+            aquaDisplayActiveSessionMs = 0L;
+            synchronized (aquaDisplayInputLock) {
+                aquaDisplayInputEvents.clear();
+            }
+            startAquaDisplayBridge();
+            installAquaDisplayRuntime();
             writeTextChecked(script, code);
             writeTextChecked(runner, "#!/system/bin/sh\n"
-                    + "python " + shellQuote(script.getAbsolutePath()) + "\n"
+                    + shellQuote(python.getAbsolutePath()) + " " + shellQuote(script.getAbsolutePath()) + "\n"
                     + "status=$?\n"
                     + "printf '\\n[python exit %s]\\n' \"$status\"\n"
                     + "printf 'Press Enter to return to editor...'\n"
@@ -10693,6 +12567,9 @@ public class MainActivity extends Activity {
     public void onBackPressed() {
         if (bootstrapShowingOutput && bootstrapDownloading) {
             showBootstrapVisual();
+            return;
+        }
+        if (dismissFindOverlay()) {
             return;
         }
         if (completionPopup != null && completionPopup.isShowing()) {
@@ -10730,7 +12607,7 @@ public class MainActivity extends Activity {
             return;
         }
         if (aquaDisplayVisible) {
-            showEditor();
+            closeAquaDisplayBuffer();
             return;
         }
         if (settingsVisible) {
@@ -10829,6 +12706,205 @@ public class MainActivity extends Activity {
         completionPopup.setClippingEnabled(true);
         completionPopup.setBackgroundDrawable(roundRect(COMPLETION_BG, dp(6)));
         if (Build.VERSION.SDK_INT >= 21) completionPopup.setElevation(dp(8));
+    }
+
+    private void showFindOverlay() {
+        if (editor == null) return;
+        ensureFindPopup();
+        dismissCompletions();
+        clearAiSuggestion();
+        if (!findPopup.isShowing()) {
+            int y = dp(48 + 2 + 36 + 1 + 8);
+            findPopup.showAtLocation(editor, Gravity.TOP | Gravity.RIGHT, dp(8), y);
+        }
+        String selected = selectedEditorText();
+        if (!selected.trim().isEmpty() && selected.indexOf('\n') < 0 && selected.length() <= 80) {
+            findInput.setText(selected);
+            findInput.setSelection(findInput.getText().length());
+        }
+        refreshFindMatches(true);
+        findInput.requestFocus();
+        InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (imm != null) imm.showSoftInput(findInput, InputMethodManager.SHOW_IMPLICIT);
+    }
+
+    private void ensureFindPopup() {
+        if (findPopup != null) return;
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.HORIZONTAL);
+        box.setGravity(Gravity.CENTER_VERTICAL);
+        box.setPadding(dp(8), dp(7), dp(7), dp(7));
+        box.setBackground(rounded(Color.rgb(43, 47, 55), Color.rgb(82, 90, 104), 1, 8));
+
+        findInput = new EditText(this);
+        findInput.setSingleLine(true);
+        findInput.setHint("Find");
+        findInput.setTextColor(TEXT);
+        findInput.setHintTextColor(Color.rgb(160, 168, 180));
+        findInput.setTextSize(13);
+        findInput.setTypeface(Typeface.MONOSPACE);
+        findInput.setPadding(dp(8), 0, dp(8), 0);
+        findInput.setSelectAllOnFocus(false);
+        findInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        findInput.setBackground(rounded(Color.rgb(31, 35, 42), Color.rgb(70, 78, 92), 1, 6));
+        findInput.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable s) {
+                refreshFindMatches(true);
+            }
+        });
+        findInput.setOnKeyListener((v, keyCode, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+                gotoFindMatch(!event.isShiftPressed());
+                return true;
+            }
+            if (keyCode == KeyEvent.KEYCODE_ESCAPE) {
+                dismissFindOverlay();
+                return true;
+            }
+            return false;
+        });
+        box.addView(findInput, new LinearLayout.LayoutParams(0, dp(34), 1));
+
+        findCountText = new TextView(this);
+        findCountText.setText("0/0");
+        findCountText.setTextColor(MUTED);
+        findCountText.setTextSize(12);
+        findCountText.setGravity(Gravity.CENTER);
+        findCountText.setSingleLine(true);
+        LinearLayout.LayoutParams countParams = new LinearLayout.LayoutParams(dp(54), dp(34));
+        countParams.setMargins(dp(6), 0, dp(2), 0);
+        box.addView(findCountText, countParams);
+
+        box.addView(findOverlayButton("^", v -> gotoFindMatch(false)), new LinearLayout.LayoutParams(dp(30), dp(34)));
+        box.addView(findOverlayButton("v", v -> gotoFindMatch(true)), new LinearLayout.LayoutParams(dp(30), dp(34)));
+        box.addView(findOverlayButton("x", v -> dismissFindOverlay()), new LinearLayout.LayoutParams(dp(30), dp(34)));
+
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        int width = Math.min(screenWidth - dp(32), Math.max(dp(250), Math.round(screenWidth * 0.72f)));
+        findPopup = new PopupWindow(box, width, dp(50), true);
+        findPopup.setOutsideTouchable(true);
+        findPopup.setClippingEnabled(true);
+        findPopup.setBackgroundDrawable(rounded(Color.rgb(43, 47, 55), Color.TRANSPARENT, 0, 8));
+        if (Build.VERSION.SDK_INT >= 21) findPopup.setElevation(dp(10));
+        findPopup.setOnDismissListener(() -> {
+            findMatches.clear();
+            findMatchIndex = -1;
+            findQuery = "";
+            if (editor != null) editor.requestFocus();
+        });
+    }
+
+    private TextView findOverlayButton(String label, View.OnClickListener listener) {
+        TextView button = new TextView(this);
+        button.setText(label);
+        button.setTextColor(TEXT);
+        button.setTextSize(15);
+        button.setTypeface(Typeface.DEFAULT_BOLD);
+        button.setGravity(Gravity.CENTER);
+        button.setBackground(rounded(Color.TRANSPARENT, Color.TRANSPARENT, 0, 6));
+        button.setOnClickListener(listener);
+        button.setOnTouchListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) v.setBackground(rounded(Color.rgb(82, 90, 104), Color.TRANSPARENT, 0, 6));
+            if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
+                v.setBackground(rounded(Color.TRANSPARENT, Color.TRANSPARENT, 0, 6));
+            }
+            return false;
+        });
+        return button;
+    }
+
+    private boolean dismissFindOverlay() {
+        if (findPopup != null && findPopup.isShowing()) {
+            findPopup.dismiss();
+            return true;
+        }
+        return false;
+    }
+
+    private String selectedEditorText() {
+        if (editor == null) return "";
+        int start = editorSelectionStart();
+        int end = editorSelectionEnd();
+        if (start == end) return "";
+        String text = editorText();
+        int left = Math.max(0, Math.min(start, end));
+        int right = Math.min(text.length(), Math.max(start, end));
+        return left < right ? text.substring(left, right) : "";
+    }
+
+    private void refreshFindMatches(boolean jumpToNearest) {
+        if (findInput == null) return;
+        String query = findInput.getText().toString();
+        findMatches.clear();
+        findQuery = query;
+        if (!query.isEmpty()) {
+            String text = editorText();
+            String lowerText = text.toLowerCase(Locale.US);
+            String lowerQuery = query.toLowerCase(Locale.US);
+            int from = 0;
+            while (from <= lowerText.length()) {
+                int index = lowerText.indexOf(lowerQuery, from);
+                if (index < 0) break;
+                findMatches.add(new int[]{index, index + query.length()});
+                from = Math.max(index + 1, index + query.length());
+            }
+        }
+        int cursor = editorSelectionStart();
+        findMatchIndex = -1;
+        if (!findMatches.isEmpty()) {
+            for (int i = 0; i < findMatches.size(); i++) {
+                int[] match = findMatches.get(i);
+                if (cursor >= match[0] && cursor <= match[1]) {
+                    findMatchIndex = i;
+                    break;
+                }
+                if (jumpToNearest && match[0] >= cursor) {
+                    findMatchIndex = i;
+                    break;
+                }
+            }
+            if (findMatchIndex < 0) findMatchIndex = 0;
+            if (jumpToNearest) selectFindMatch(findMatchIndex);
+        }
+        updateFindCount();
+    }
+
+    private void gotoFindMatch(boolean forward) {
+        if (findInput == null) return;
+        if (!findQuery.equals(findInput.getText().toString())) refreshFindMatches(false);
+        if (findMatches.isEmpty()) {
+            updateFindCount();
+            return;
+        }
+        if (findMatchIndex < 0) findMatchIndex = forward ? 0 : findMatches.size() - 1;
+        else findMatchIndex = (findMatchIndex + (forward ? 1 : -1) + findMatches.size()) % findMatches.size();
+        selectFindMatch(findMatchIndex);
+        updateFindCount();
+    }
+
+    private void selectFindMatch(int index) {
+        if (editor == null || index < 0 || index >= findMatches.size()) return;
+        int[] match = findMatches.get(index);
+        setEditorSelection(match[0], match[1]);
+        editor.invalidate();
+    }
+
+    private void updateFindCount() {
+        if (findCountText == null) return;
+        if (findQuery == null || findQuery.isEmpty()) {
+            findCountText.setText("0/0");
+            findCountText.setTextColor(MUTED);
+        } else if (findMatches.isEmpty()) {
+            findCountText.setText("0/0");
+            findCountText.setTextColor(Color.rgb(255, 128, 128));
+        } else {
+            findCountText.setText((findMatchIndex + 1) + "/" + findMatches.size());
+            findCountText.setTextColor(MUTED);
+        }
     }
 
     private int completionPopupHeight(int rowCount) {

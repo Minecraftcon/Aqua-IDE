@@ -1,0 +1,20 @@
+# Pure-Python wheels safe to mirror into Aqua's optional Python asset index.
+# These are installable on Android as py3-none-any wheels, assuming native
+# dependencies from requirements-extra-ai-native.txt are installed separately.
+
+datasets
+transformers
+huggingface-hub
+filelock
+fsspec
+dill
+multiprocess
+packaging
+requests
+tqdm
+typing-extensions
+pyarrow-hotfix
+certifi
+charset-normalizer
+idna
+urllib3

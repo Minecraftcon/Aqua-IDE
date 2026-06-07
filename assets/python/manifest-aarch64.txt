@@ -1,0 +1,13 @@
+freetype_2.14.3_aarch64.deb
+giflib_5.2.2-2_aarch64.deb
+libjpeg-turbo_3.1.4.1_aarch64.deb
+libpng_1.6.58_aarch64.deb
+libtiff_4.7.1_aarch64.deb
+libwebp_1.6.0-1_aarch64.deb
+littlecms_2.19.1_aarch64.deb
+openjpeg_2.5.4_aarch64.deb
+python-kivy_2.3.1_aarch64.deb
+python-numpy_2.4.4_aarch64.deb
+python-pillow_12.2.0_aarch64.deb
+python-tflite-runtime_2.20.0-3_aarch64.deb
+xxhash_0.8.3-1_aarch64.deb

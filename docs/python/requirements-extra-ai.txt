@@ -1,0 +1,37 @@
+# Aqua optional AI/Python package set.
+#
+# Pure Python packages are mirrored as wheels under assets/python/wheels by
+# comiled-bianaries/fetch-aqua-python-wheel-assets.sh.
+#
+# Native packages must be built as Android debs/wheels per ABI before they can
+# be installed in Aqua:
+# - tokenizers
+# - safetensors
+# - pyarrow
+# - pandas
+# - regex
+#
+# Runtime-native packages already tracked in deb assets:
+# - python-tflite-runtime
+# - python-numpy
+# - xxhash
+
+datasets
+transformers
+huggingface-hub
+tokenizers
+safetensors
+pyarrow
+pandas
+regex
+filelock
+fsspec
+dill
+multiprocess
+packaging
+pyyaml
+requests
+tqdm
+aiohttp
+numpy
+xxhash

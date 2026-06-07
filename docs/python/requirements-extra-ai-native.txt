@@ -1,0 +1,19 @@
+# Native Android packages required by datasets/transformers/tokenizers stacks.
+# Do not mirror Linux wheels for these. Build Android ABI-specific debs/wheels
+# from source and stage them under assets/python/debs/<arch>/ or
+# assets/python/wheels/<arch>/.
+
+tokenizers
+safetensors
+pyarrow
+pandas
+regex
+pyyaml
+aiohttp
+frozenlist
+multidict
+yarl
+aiosignal
+numpy
+xxhash
+python-tflite-runtime

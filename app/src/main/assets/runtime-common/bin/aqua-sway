@@ -1,0 +1,68 @@
+#!/system/bin/sh
+set -eu
+
+PREFIX="${PREFIX:-/data/data/com.andropy.ide/files/usr}"
+HOME="${HOME:-/data/data/com.andropy.ide/files/home}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$PREFIX/tmp}"
+export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-${ANDROPY_WAYLAND_SOCKET:-aqua-wayland-com.andropy.ide}}"
+export WLR_BACKENDS="${WLR_BACKENDS:-headless}"
+export WLR_RENDERER="${WLR_RENDERER:-pixman}"
+export WLR_NO_HARDWARE_CURSORS=1
+export XWAYLAND="${XWAYLAND:-$PREFIX/bin/Xwayland}"
+export AQUA_SWAY_WIDTH="${AQUA_SWAY_WIDTH:-1080}"
+export AQUA_SWAY_HEIGHT="${AQUA_SWAY_HEIGHT:-2400}"
+mkdir -p "$XDG_RUNTIME_DIR" "$HOME/.config/sway"
+
+if [ -n "${ANDROPY_DISPLAY_SOCKET:-}" ]; then
+  python - <<'PY' >/dev/null 2>&1 || true
+import aquawayland
+aquawayland.open("Aqua Sway")
+PY
+  (
+    sleep 1
+    arch="$(uname -m)"
+    case "$arch" in
+      x86_64) capture="$PREFIX/bin/aqua-sway-capture-x86_64" ;;
+      aarch64|arm64) capture="$PREFIX/bin/aqua-sway-capture-aarch64" ;;
+      *) capture="" ;;
+    esac
+    case "$arch" in
+      x86_64) wallpaper="$PREFIX/bin/aqua-sway-wallpaper-x86_64" ;;
+      aarch64|arm64) wallpaper="$PREFIX/bin/aqua-sway-wallpaper-aarch64" ;;
+      *) wallpaper="" ;;
+    esac
+    case "$arch" in
+      x86_64) input="$PREFIX/bin/aqua-sway-input-x86_64" ;;
+      aarch64|arm64) input="$PREFIX/bin/aqua-sway-input-aarch64" ;;
+      *) input="" ;;
+    esac
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      socket_path="$(find "$XDG_RUNTIME_DIR" -maxdepth 1 -type s -name 'wayland-*' 2>/dev/null | sort | tail -n 1 || true)"
+      if [ -n "$socket_path" ]; then
+        export WAYLAND_DISPLAY="$(basename "$socket_path")"
+        break
+      fi
+      sleep 1
+    done
+    if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -n "$wallpaper" ] && [ -x "$wallpaper" ]; then
+      "$wallpaper" 2>>"$XDG_RUNTIME_DIR/aqua-sway-wallpaper.log" &
+      sleep 1
+    fi
+    if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -n "$input" ] && [ -x "$input" ]; then
+      "$input" 2>>"$XDG_RUNTIME_DIR/aqua-sway-input.log" &
+    fi
+    while [ -n "${WAYLAND_DISPLAY:-}" ] && [ -n "$capture" ] && [ -x "$capture" ]; do
+      "$capture" "${AQUA_SWAY_CAPTURE_FPS:-60}" || true
+      sleep 1
+    done
+  ) >/dev/null 2>"$XDG_RUNTIME_DIR/aqua-sway-capture.log" &
+fi
+
+if [ ! -f "$HOME/.config/sway/config" ] \
+  || grep -q 'output \* bg #111820 solid_color' "$HOME/.config/sway/config" 2>/dev/null \
+  || ! grep -q 'output HEADLESS-1 resolution 1080x2400' "$HOME/.config/sway/config" 2>/dev/null \
+  || ! grep -q 'height 74' "$HOME/.config/sway/config" 2>/dev/null; then
+  cp "$PREFIX/etc/sway/config" "$HOME/.config/sway/config"
+fi
+
+exec sway -c "$HOME/.config/sway/config" "$@"

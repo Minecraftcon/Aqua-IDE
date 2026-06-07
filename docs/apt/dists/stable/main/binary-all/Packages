@@ -1,0 +1,123 @@
+Package: ca-certificates-java
+Architecture: all
+Installed-Size: 140
+Maintainer: @termux
+Version: 1:2026.05.14
+Homepage: https://curl.se/docs/caextract.html
+Depends: ca-certificates (= 1:2026.05.14)
+Description: Common CA certificates (java keystore format)
+Filename: pool/main/ca-certificates-java_1:2026.05.14_all.deb
+Size: 96452
+SHA256: f9ca9685db38f080d3f24d2f984dd7676c723754ebb6cff244d38f8d7f2a820b
+
+Package: ca-certificates
+Architecture: all
+Installed-Size: 192
+Maintainer: @termux
+Version: 1:2026.05.14
+Homepage: https://curl.se/docs/caextract.html
+Description: Common CA certificates
+Filename: pool/main/ca-certificates_1:2026.05.14_all.deb
+Size: 105732
+SHA256: 8965bf03cf81d3b394569207acb15aede694923521315149a95a954e38179fd5
+
+Package: docbook-xml
+Architecture: all
+Installed-Size: 2320
+Maintainer: @termux
+Version: 5.1-1
+Homepage: https://www.oasis-open.org/docbook/
+Breaks: docbook-xsl (<= 1.79.2-1)
+Depends: libxml2-utils
+Description: A widely used XML scheme for writing documentation and help
+Filename: pool/main/docbook-xml_5.1-1_all.deb
+Size: 78164
+SHA256: f935d336c63bd36ff65f02e232dec70f680ea9f5d17c5d4284b86ebf1b21f5b2
+
+Package: docbook-xsl
+Architecture: all
+Installed-Size: 33096
+Maintainer: @termux
+Version: 1.79.2-4
+Homepage: https://docbook.org/
+Depends: docbook-xml (>= 5.1), libxml2-utils, xsltproc
+Description: XML stylesheets for Docbook-xml transformations
+Filename: pool/main/docbook-xsl_1.79.2-4_all.deb
+Size: 1387644
+SHA256: 4411b79c2eda77671233e7f1de2dc9e0315351ff870cf316b4462bb30fb3729c
+
+Package: dpkg-perl
+Architecture: all
+Installed-Size: 832
+Maintainer: @termux
+Version: 1.22.6-5
+Homepage: https://packages.debian.org/dpkg
+Depends: perl, clang, make, dpkg (= 1.22.6-5)
+Description: Perl modules for dpkg
+Filename: pool/main/dpkg-perl_1.22.6-5_all.deb
+Size: 126284
+SHA256: 5f43484aa0edd24df3c5ecc7cf7fcf337dce3dba36566947b46ff18a718683a9
+
+Package: dpkg-scanpackages
+Architecture: all
+Installed-Size: 16
+Maintainer: @termux
+Version: 1.22.6-5
+Homepage: https://packages.debian.org/dpkg
+Depends: dpkg-perl, dpkg (= 1.22.6-5)
+Description: Creates Packages index files
+Filename: pool/main/dpkg-scanpackages_1.22.6-5_all.deb
+Size: 6512
+SHA256: ba7a804daab2a33d7c8a6cc276095b918ba117ba13bae4f7bc7681546c30c91a
+
+Package: python-ensurepip-wheels
+Architecture: all
+Installed-Size: 1748
+Maintainer: Yaksh Bariya <thunder-coding@termux.dev>
+Version: 3.13.13-1
+Homepage: https://python.org/
+Depends: python (= 3.13.13-1)
+Breaks: python (<< 3.11.1-3)
+Replaces: python (<< 3.11.1-3)
+Description: Wheels for Python ensurepip
+Filename: pool/main/python-ensurepip-wheels_3.13.13-1_all.deb
+Size: 1713248
+SHA256: 35927755e3a1f12a963446b787564f3cc5f05ec4760dc81b594d7e9425ffe186
+
+Package: python-pip
+Architecture: all
+Installed-Size: 6936
+Maintainer: @termux
+Version: 26.1.2
+Homepage: https://pip.pypa.io/
+Breaks: python (<< 3.11.1-1)
+Depends: python (>= 3.11.1-1)
+Recommends: clang, make, pkg-config
+Description: The PyPA recommended tool for installing Python packages
+Filename: pool/main/python-pip_26.1.2_all.deb
+Size: 1166884
+SHA256: 5e8a82514ddbec665f10897010ed77a63a7133d6bc4e6aa63cc4485e27b423a5
+
+Package: termux-keyring
+Architecture: all
+Installed-Size: 136
+Maintainer: @termux
+Version: 3.13
+Homepage: https://github.com/termux
+Essential: yes
+Description: GPG public keys for the official Termux repositories
+Filename: pool/main/termux-keyring_3.13_all.deb
+Size: 39820
+SHA256: 16f76d86be41528803deec6583c057279dcf80c4e35a894f4345e9b30d7aa42a
+
+Package: termux-licenses
+Architecture: all
+Installed-Size: 576
+Maintainer: @termux
+Version: 2.1
+Homepage: https://termux.dev
+Essential: yes
+Description: Contains LICENSE files for common licenses
+Filename: pool/main/termux-licenses_2.1_all.deb
+Size: 52592
+SHA256: 478abc328de9323734740cb6e408605987fa8c57c41b477303e9e34674a6fe85

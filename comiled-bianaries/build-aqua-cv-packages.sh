@@ -24,6 +24,10 @@ AQUA_PREFETCH="${AQUA_PREFETCH:-1}"
 AQUA_PREFETCH_ONLY="${AQUA_PREFETCH_ONLY:-0}"
 AQUA_STAGE_ONLY="${AQUA_STAGE_ONLY:-0}"
 AQUA_STAGE_CLEAN="${AQUA_STAGE_CLEAN:-1}"
+AQUA_SYNC_PREFIX_FROM_OUTPUT="${AQUA_SYNC_PREFIX_FROM_OUTPUT:-1}"
+AQUA_SYNC_DEB_DIRS="${AQUA_SYNC_DEB_DIRS:-output $ROOT/docs/apt/pool/main $OUT/debs $BASE_RUNTIME_OUT/debs $ASSETS_OUT/debs $PYTHON_ASSETS_OUT/debs}"
+AQUA_ENABLE_REAL_TKINTER="${AQUA_ENABLE_REAL_TKINTER:-1}"
+AQUA_TKINTER_EGL_SOURCE_ROOT="${AQUA_TKINTER_EGL_SOURCE_ROOT:-${AQUA_TKINTER_SOURCE_ROOT:-$ROOT/comiled-bianaries/sources/aqua-tkinter-egl}}"
 AQUA_EXCLUDED_RUNTIME_PACKAGES="${AQUA_EXCLUDED_RUNTIME_PACKAGES:-\
 dialog dialog-static glib glib-cross termux-am termux-am-socket termux-exec termux-exec-static}"
 AQUA_FAT_PACKAGES="${AQUA_FAT_PACKAGES:-\
@@ -31,7 +35,9 @@ blas-openblas clang cmake cmake-curses-gui libcompiler-rt libllvm libllvm-static
 libopenblas libopenblas-static libpolly lld llvm llvm-tools make ndk-sysroot ninja \
 pkg-config}"
 AQUA_FAT_PYTHON_PACKAGES="${AQUA_FAT_PYTHON_PACKAGES:-\
-python-numpy python-numpy-static python-tflite-runtime}"
+freetype giflib libjpeg-turbo libpng libtiff libwebp littlecms openjpeg \
+python-numpy python-numpy-static python-pillow python-tflite-runtime python-kivy \
+xxhash}"
 AQUA_APT_PACKAGES="${AQUA_APT_PACKAGES:-\
 termux-core termux-keyring termux-licenses termux-elf-cleaner \
 apt dpkg bash brotli ca-certificates coreutils diffutils findutils gawk grep \
@@ -39,9 +45,11 @@ gzip less nano ncurses readline sed tar unzip util-linux xxhash zlib zstd \
 libandroid-glob libandroid-posix-semaphore libandroid-shmem libandroid-spawn \
 libandroid-support libbz2 libc++ libcrypt libcurl libexpat libffi libgcrypt \
 libgnutls libiconv liblz4 liblzma libmd libpng libsqlite libxml2 openssl \
-cmake make ninja patch pkg-config ndk-sysroot libllvm \
-python python-pip python-numpy python-tflite-runtime \
-libopenblas}"
+cmake make ninja patch pkg-config ndk-sysroot libllvm tcl tk \
+python python-pip python-numpy python-pillow python-tflite-runtime python-kivy \
+libopenblas libwayland libwayland-protocols libxkbcommon xkeyboard-config \
+xwayland sway swaybg}"
+AQUA_MOBILE_WAYLAND_PACKAGES="${AQUA_MOBILE_WAYLAND_PACKAGES:-}"
 
 mkdir -p "$WORK" "$OUT" "$BASE_RUNTIME_OUT" "$ASSETS_OUT" "$PYTHON_ASSETS_OUT"
 
@@ -73,6 +81,17 @@ if [[ "${AQUA_CV_REFRESH_SOURCES:-0}" == 1 && -d .git ]]; then
   git fetch --depth 1 origin master
   git reset --hard FETCH_HEAD
 fi
+if [[ -f "$SOURCE_TREE/build-package.sh" && "$SOURCE_TREE" != "$WORK/termux-packages" ]]; then
+  for custom_name in python python-kivy tcl tk json-c wlroots sway swaybg phoc \
+    hwdata libdisplay-info libseat scdoc libevdev libxkbcommon mtdev \
+    xkeyboard-config xwayland; do
+    custom_pkg="$SOURCE_TREE/packages/$custom_name"
+    [[ -d "$custom_pkg" ]] || continue
+    target_pkg="$WORK/termux-packages/packages/${custom_pkg##*/}"
+    rm -rf "$target_pkg"
+    cp -a "$custom_pkg" "$target_pkg"
+  done
+fi
 "$ROOT/comiled-bianaries/patch-aqua-termux-packages.sh" "$WORK/termux-packages"
 termux_tools_build="$WORK/termux-packages/packages/termux-tools/build.sh"
 if [[ -f "$termux_tools_build" ]]; then
@@ -98,6 +117,16 @@ export TERMUX_NDK_VERSION_NUM="${TERMUX_NDK_VERSION_NUM:-29}"
 export ANDROID_HOME="${ANDROID_HOME:-/home/shado/envs/android-sdk}"
 export NDK="${NDK:-/home/shado/envs/android-ndk-r${TERMUX_NDK_VERSION_NUM}}"
 export TERMUX_PACKAGES_OFFLINE=false
+export AQUA_ENABLE_REAL_TKINTER
+export AQUA_TKINTER_EGL_SOURCE_ROOT
+export AQUA_PROJECT_ROOT="$ROOT"
+if [[ "$AQUA_ENABLE_REAL_TKINTER" == 1 ]]; then
+  if [[ -d "$AQUA_TKINTER_EGL_SOURCE_ROOT/tk" ]]; then
+    python3 "$ROOT/comiled-bianaries/tkinter-egl/patch-aqua-tk-android.py" "$AQUA_TKINTER_EGL_SOURCE_ROOT"
+  else
+    echo "WARN: Aqua Tkinter EGL source tree not found: $AQUA_TKINTER_EGL_SOURCE_ROOT" >&2
+  fi
+fi
 if [[ -f build-tools/.installed ]]; then
   mv -f build-tools/.installed build-tools/.installed.aqua-disabled
 fi
@@ -113,7 +142,7 @@ if [[ ! -w "$host_app_data" ]]; then
   sudo chown -R "$USER" "$host_app_data"
 fi
 
-read -r -a requested_packages <<< "$AQUA_APT_PACKAGES"
+read -r -a requested_packages <<< "$AQUA_APT_PACKAGES $AQUA_MOBILE_WAYLAND_PACKAGES"
 package_dirs="$(jq --raw-output 'del(.pkg_format) | keys | .[]' repo.json)"
 packages=()
 for pkg in "${requested_packages[@]}"; do
@@ -388,6 +417,85 @@ is_built_for_arch() {
   [[ -f "$WORK/topdir-$arch/.built-packages/$pkg" ]]
 }
 
+deb_matches_arch() {
+  local deb="$1"
+  local arch="$2"
+  [[ "$deb" == *_all.deb || "$deb" == *_"$arch".deb ]]
+}
+
+sync_prefix_from_output_debs() {
+  local arch="$1"
+  local deb deb_dir count=0 package version marker_dir
+
+  [[ "$AQUA_SYNC_PREFIX_FROM_OUTPUT" == 1 ]] || return 0
+
+  echo "==> Syncing $TERMUX__PREFIX from already-built $arch debs"
+  marker_dir="$WORK/topdir-$arch/.built-packages"
+  mkdir -p "$marker_dir"
+  for deb_dir in $AQUA_SYNC_DEB_DIRS; do
+    [[ -d "$deb_dir" ]] || continue
+    while IFS= read -r deb; do
+      deb_matches_arch "$deb" "$arch" || continue
+      package="$(dpkg-deb -f "$deb" Package 2>/dev/null || true)"
+      version="$(dpkg-deb -f "$deb" Version 2>/dev/null || true)"
+      [[ -n "$package" && -n "$version" ]] || continue
+      if dpkg-deb --fsys-tarfile "$deb" | tar -tf - | grep -q '^\./data/data/com\.termux/'; then
+        echo "WARN: Skipping stale Termux-path deb during sync: $deb" >&2
+        continue
+      fi
+      dpkg-deb --fsys-tarfile "$deb" | tar \
+        --extract \
+        --directory /data/data \
+        --strip-components=3 \
+        --no-overwrite-dir \
+        --no-same-owner \
+        --no-same-permissions
+      printf '%s\n' "$version" > "$marker_dir/$package"
+      count=$(( count + 1 ))
+    done < <(find "$deb_dir" -maxdepth 1 -type f -name '*.deb' | sort)
+  done
+  echo "==> Synced $count local debs into build prefix"
+}
+
+repair_x11_internal_headers() {
+  local x11_include="$TERMUX_TOPDIR/libx11/massage$TERMUX__PREFIX/include/X11"
+
+  [[ -f "$x11_include/Xlib.h" && -f "$x11_include/Xlibint.h" ]] || return 0
+
+  mkdir -p "$TERMUX__PREFIX/include/X11"
+  cp -a "$x11_include/." "$TERMUX__PREFIX/include/X11/"
+  find "$TERMUX__PREFIX/include/X11" -type f -exec chmod 0644 {} +
+  echo "==> Refreshed libX11 headers from current build tree"
+}
+
+repair_wayland_scanner_for_host_build() {
+  local host_scanner="$TERMUX_TOPDIR/libwayland/host-build/src/wayland-scanner"
+
+  [[ -x "$host_scanner" ]] || return 0
+
+  mkdir -p "$TERMUX__PREFIX/bin" "$TERMUX__PREFIX/opt/libwayland/cross/bin"
+  install -m 0755 "$host_scanner" "$TERMUX__PREFIX/bin/wayland-scanner"
+  install -m 0755 "$host_scanner" "$TERMUX__PREFIX/opt/libwayland/cross/bin/wayland-scanner"
+  echo "==> Refreshed host wayland-scanner wrappers in build prefix"
+}
+
+repair_python_crossenv_wrappers() {
+  local arch="$1"
+  local crossenv build_python wrapper
+
+  for crossenv in "$WORK/topdir-$arch"/python*-crossenv-prefix-bionic-"$arch"; do
+    [[ -d "$crossenv/build/bin" ]] || continue
+    build_python="$(readlink -f "$crossenv/build/bin/python" 2>/dev/null || true)"
+    [[ -n "$build_python" && -x "$build_python" ]] || continue
+    for wrapper in build-pip build-pip3 build-pip3.13; do
+      if [[ ! -x "$crossenv/build/bin/pip" || ! -e "$crossenv/build/bin/${wrapper#build-}" ]]; then
+        printf '#!/bin/sh\nexec %s -m pip "$@"\n' "$build_python" > "$crossenv/bin/$wrapper"
+        chmod +x "$crossenv/bin/$wrapper"
+      fi
+    done
+  done
+}
+
 write_allowed_runtime_packages() {
   local manifest="$1"
   local pkg rel_path subpackage
@@ -439,6 +547,9 @@ stage_runtime_debs_for_arch() {
   : > "$fat_python_manifest"
 
   while IFS= read -r deb; do
+    if ! deb_matches_arch "$deb" "$arch"; then
+      continue
+    fi
     pkg="$(deb_package_name "$deb")"
     if ! is_allowed_runtime_package "$allowed_manifest" "$pkg"; then
       continue
@@ -520,6 +631,10 @@ for arch in $ARCHES; do
   fi
   mkdir -p "$TERMUX__PREFIX" "$TERMUX__HOME"
   echo "$arch" > "$prefix_arch_file"
+  sync_prefix_from_output_debs "$arch"
+  repair_x11_internal_headers
+  repair_wayland_scanner_for_host_build
+  repair_python_crossenv_wrappers "$arch"
 
   for pkg in "${packages[@]}"; do
     ./build-package.sh -j "$BUILD_JOBS" -a "$arch" "$pkg"

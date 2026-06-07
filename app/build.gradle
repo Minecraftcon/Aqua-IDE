@@ -22,7 +22,8 @@ def andropyRuntimeAssets = andropyAbi == "arm64-v8a"
 android {
     namespace "com.andropy.ide"
     compileSdk 34
-    ndkVersion "25.2.9519653"
+    ndkVersion "29.0.14206865"
+    ndkPath "/home/shado/envs/android-ndk-r29"
 
     buildFeatures {
         buildConfig true
@@ -47,6 +48,13 @@ android {
             } else {
                 abiFilters(*andropyDefaultAbis)
             }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+            version "3.22.1"
         }
     }
 

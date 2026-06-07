@@ -2,10 +2,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SRC="${AQUA_TKINTER_SRC:-$ROOT/comiled-bianaries/sources/aqua-tkinter}"
+SRC="${AQUA_TKINTER_WAYLAND_SRC:-$ROOT/comiled-bianaries/sources/aqua-tkinter-wayland}"
 TCL_BRANCH="${AQUA_TCL_BRANCH:-core-8-6-branch}"
 TK_BRANCH="${AQUA_TK_BRANCH:-core-8-6-branch}"
 CPYTHON_TAG="${AQUA_CPYTHON_TAG:-v3.13.13}"
+REFRESH="${AQUA_REFRESH_TKINTER_WAYLAND_SOURCES:-0}"
 
 mkdir -p "$SRC"
 
@@ -15,8 +16,10 @@ clone_or_refresh() {
   local dir="$3"
   shift 3
   if [[ -d "$dir/.git" ]]; then
-    git -C "$dir" fetch --depth 1 origin "$branch"
-    git -C "$dir" checkout -q FETCH_HEAD
+    if [[ "$REFRESH" == 1 ]]; then
+      git -C "$dir" fetch --depth 1 origin "$branch"
+      git -C "$dir" checkout -q FETCH_HEAD
+    fi
   else
     git clone --progress --depth 1 --filter=blob:none --sparse --single-branch --branch "$branch" "$url" "$dir"
   fi
@@ -30,11 +33,11 @@ clone_cpython_sparse() {
   if [[ ! -d "$dir/.git" ]]; then
     git clone --depth 1 --filter=blob:none --sparse --branch "$CPYTHON_TAG" \
       https://github.com/python/cpython.git "$dir"
-  else
+  elif [[ "$REFRESH" == 1 ]]; then
     git -C "$dir" fetch --depth 1 origin "refs/tags/$CPYTHON_TAG:refs/tags/$CPYTHON_TAG"
     git -C "$dir" checkout -q "$CPYTHON_TAG"
   fi
-  git -C "$dir" sparse-checkout set \
+  git -C "$dir" sparse-checkout set --no-cone \
     Lib/tkinter \
     Modules/_tkinter.c \
     Modules/clinic/_tkinter.c.h \
@@ -47,9 +50,7 @@ clone_or_refresh https://github.com/tcltk/tk.git "$TK_BRANCH" "$SRC/tk" \
   generic unix library xlib doc license.terms README.md ChangeLog
 clone_cpython_sparse "$SRC/cpython"
 
-python3 "$ROOT/comiled-bianaries/tkinter/patch-aqua-tk-android.py" "$SRC"
-
-printf 'Aqua Tkinter shallow sources ready:\n'
+printf 'Aqua Tkinter Wayland/Xwayland shallow sources ready:\n'
 printf '  %s/tcl\n' "$SRC"
 printf '  %s/tk\n' "$SRC"
 printf '  %s/cpython\n' "$SRC"
